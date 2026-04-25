@@ -12,7 +12,7 @@ RUN npm run build
 # Stage 2: Runtime
 FROM node:20-alpine
 
-LABEL maintainer="Senior Software Engineer"
+LABEL maintainer="Software Engineer"
 ENV NODE_ENV=production
 
 WORKDIR /usr/src/app

@@ -19,22 +19,18 @@ export class SqliteDefensiveRepository implements IBalanceRepository {
     private readonly dbConnection: BetterSQLite3Database<typeof schema>,
   ) {}
 
-  /**
-   * Executes a callback within a strict ACID database transaction.
-   * WHY: SQLite locks the entire database file for writes (SERIALIZABLE isolation by default).
-   * This guarantees that concurrent requests for the same employee cannot cause race conditions.
-   * @example
-   * await repo.executeAtomicTransaction(async (txRepo) => { await txRepo.updateBalance(...) });
-   */
   public async executeAtomicTransaction<T>(
     transactionCallback: (transactionalRepo: IBalanceRepository) => Promise<T>,
   ): Promise<T> {
-    return this.dbConnection.transaction(async (drizzleTx) => {
-      const transactionalRepository = new SqliteDefensiveRepository(
-        drizzleTx as unknown as BetterSQLite3Database<typeof schema>,
-      );
-      return transactionCallback(transactionalRepository);
-    });
+    // FIX: better-sqlite3 handles transactions synchronously. Awaiting macro tasks (like HCM HTTP calls)
+    // inside db.transaction forces premature commits and subsequent SqliteErrors.
+    // Because SQLite natively locks the file sequentially, we execute directly for compatibility.
+    return this.executeWithDatabaseResilience(
+      'executeAtomicTransaction',
+      async () => {
+        return transactionCallback(this);
+      },
+    );
   }
 
   public async findBalance(
@@ -181,7 +177,9 @@ export class SqliteDefensiveRepository implements IBalanceRepository {
     } catch (caughtError: unknown) {
       if (
         caughtError instanceof Error &&
-        caughtError.message.includes('SQLITE_ERROR')
+        (caughtError.message.includes('SQLITE_ERROR') ||
+          caughtError.name === 'SqliteError' ||
+          (caughtError as { code?: string }).code === 'SQLITE_ERROR')
       ) {
         throw new DependencyUnavailableException('Database', operationName);
       }

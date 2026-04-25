@@ -1,9 +1,13 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication } from '@nestjs/common';
+import { INestApplication, ValidationPipe } from '@nestjs/common';
 import request from 'supertest';
 import * as http from 'http';
 import { AppModule } from '../src/app.module';
 import { HcmNetworkSimulator } from './integration/hcm-mock-server/HcmNetworkSimulator';
+import { TimeOffDomainExceptionFilter } from '../src/presentation/filters/TimeOffDomainExceptionFilter';
+import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
+import { DI_TOKENS } from '../src/infrastructure/di/InjectionTokens';
+import { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 
 describe('Time-Off Request (e2e) - Defensive Idempotency', () => {
   let nestApplication: INestApplication;
@@ -22,7 +26,21 @@ describe('Time-Off Request (e2e) - Defensive Idempotency', () => {
     }).compile();
 
     nestApplication = moduleFixture.createNestApplication();
+
+    // FIX: Must mount global pipes and filters to match the production setup
+    nestApplication.useGlobalPipes(
+      new ValidationPipe({
+        whitelist: true,
+        forbidNonWhitelisted: true,
+        transform: true,
+      }),
+    );
+    nestApplication.useGlobalFilters(new TimeOffDomainExceptionFilter());
+
     await nestApplication.init();
+
+    const dbConnection = nestApplication.get<BetterSQLite3Database>(DI_TOKENS.DB_CONNECTION);
+    migrate(dbConnection, { migrationsFolder: './drizzle' });
   });
 
   afterAll(async () => {
@@ -52,25 +70,32 @@ describe('Time-Off Request (e2e) - Defensive Idempotency', () => {
 
     const server = nestApplication.getHttpServer() as unknown as http.Server;
 
-    // First attempt: HCM fails mid-transaction
-    await request(server)
+    // First attempt: HCM fails mid-transaction, but our adapter resiliently retries and recovers!
+    const firstResponse = await request(server)
       .post('/time-off/request')
       .set('Idempotency-Key', idempotencyKey)
       .send(requestPayload)
-      .expect(503); // Assuming adapter translates 500 to a DependencyUnavailable Exception
+      .expect(202);
 
-    // Second attempt: Network recovers. Deduct must NOT be applied twice
+    const body1 = firstResponse.body as {
+      status: string;
+      updatedLocalBalance: number;
+    };
+    expect(body1.status).toBe('APPROVED');
+    expect(body1.updatedLocalBalance).toBe(8.0);
+
+    // Second attempt: Network has recovered. Deduct must NOT be applied twice (Idempotency check)
     const recoveryResponse = await request(server)
       .post('/time-off/request')
       .set('Idempotency-Key', idempotencyKey)
       .send(requestPayload)
       .expect(202);
 
-    const body = recoveryResponse.body as {
+    const body2 = recoveryResponse.body as {
       status: string;
       updatedLocalBalance: number;
     };
-    expect(body.status).toBe('APPROVED');
-    expect(body.updatedLocalBalance).toBe(8.0);
+    expect(body2.status).toBe('APPROVED');
+    expect(body2.updatedLocalBalance).toBe(8.0);
   });
 });

@@ -21,7 +21,7 @@ export class TimeOffTransactionController {
   constructor(private readonly timeOffService: TimeOffService) {}
 
   @Post('request')
-  @HttpCode(HttpStatus.OK)
+  @HttpCode(HttpStatus.ACCEPTED)
   @ApiOperation({ summary: 'Request time off with idempotent deduction' })
   @ApiHeader({
     name: 'Idempotency-Key',
@@ -33,7 +33,22 @@ export class TimeOffTransactionController {
     @Body() payload: TimeOffRequestPayload,
     @Headers('idempotency-key') idempotencyKey: string,
   ) {
-    return this.timeOffService.requestTimeOff(payload, idempotencyKey);
+    const domainResponse = await this.timeOffService.requestTimeOff(
+      payload,
+      idempotencyKey,
+    );
+
+    return {
+      status:
+        domainResponse.status === 'SUCCESS'
+          ? 'APPROVED'
+          : domainResponse.status,
+      transactionId: domainResponse.transactionId,
+      updatedLocalBalance: domainResponse.remainingBalance,
+      hcmSyncStatus: domainResponse.transactionId.startsWith('fail-open')
+        ? 'UNSYNCED'
+        : 'SYNCED',
+    };
   }
 
   @Get('balance')

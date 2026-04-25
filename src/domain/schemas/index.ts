@@ -50,6 +50,7 @@ export interface TimeOffRequestDto {
   readonly employeeId: string;
   readonly locationId: string;
   readonly amount: number;
+  readonly type: string;
 }
 
 export type BatchPayloadDto = HcmBatchDto;

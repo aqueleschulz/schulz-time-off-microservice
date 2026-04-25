@@ -32,6 +32,10 @@ export class TimeOffRequestPayload implements TimeOffRequestDto {
   @IsNumber()
   @IsPositive()
   readonly amount: number;
+
+  @ApiProperty({ example: 'PTO', description: 'Type of time off requested' })
+  @IsString()
+  readonly type: string;
 }
 
 export class BatchBalanceItemPayload implements HcmBatchBalanceDto {
