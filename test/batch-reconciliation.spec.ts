@@ -40,7 +40,11 @@ describe('Batch Reconciliation', () => {
       generatedAt: new Date().toISOString(),
       balances: [
         { employeeId: 'E1', locationId: 'L1', balance: 10.0 },
-        { employeeId: null as any, locationId: 'L2', balance: 5.0 },
+        {
+          employeeId: null as unknown as string,
+          locationId: 'L2',
+          balance: 5.0,
+        },
       ],
     };
 

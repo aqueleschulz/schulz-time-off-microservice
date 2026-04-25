@@ -35,7 +35,7 @@ interface HcmErrorResponse {
   code?: string;
   response?: {
     status?: number;
-    data?: { code?: string; error?: string };
+    data?: { code?: string; error?: string; currentBalance?: number };
   };
 }
 
@@ -75,18 +75,19 @@ export class HcmAdapter implements IHcmPort {
     };
   }
 
-  private handleHttpError(error: any, req: HcmDeductRequestDto): never {
-  const status = error.response?.status;
-  if (status === 422) {
-    throw new InsufficientBalanceException(
-      req.employeeId, 
-      req.locationId, 
-      req.amount, 
-      error.response.data?.currentBalance || 0
-    );
+  private handleHttpError(error: unknown, req: HcmDeductRequestDto): never {
+    const err = error as HcmErrorResponse;
+    const status = err.response?.status;
+    if (status === 422) {
+      throw new InsufficientBalanceException(
+        req.employeeId,
+        req.locationId,
+        req.amount,
+        Number(err.response?.data?.currentBalance || 0),
+      );
+    }
+    throw new DependencyUnavailableException('HCM', err.code || 'HTTP_ERROR');
   }
-  throw new DependencyUnavailableException('HCM', error.code || 'HTTP_ERROR');
-}
 
   public async deductBalance(
     deductionRequestPayload: HcmDeductRequestDto,
@@ -140,8 +141,10 @@ export class HcmAdapter implements IHcmPort {
     if (typeof responseData === 'string') {
       try {
         responseData = JSON.parse(responseData);
-      } catch (parseError) {
-        throw { code: 'JSON_PARSE_ERROR' };
+      } catch {
+        const err = new Error('JSON_PARSE_ERROR');
+        Object.assign(err, { code: 'JSON_PARSE_ERROR' });
+        throw err;
       }
     }
     return responseData;

@@ -13,12 +13,20 @@ class HttpClientMock {
   public nextError: unknown = null;
 
   async post(): Promise<{ data: unknown }> {
-    if (this.nextError) throw this.nextError;
+    await Promise.resolve();
+    if (this.nextError) {
+      if (this.nextError instanceof Error) throw this.nextError;
+      throw Object.assign(new Error(), this.nextError);
+    }
     return { data: this.nextResponse };
   }
 
   async get(): Promise<{ data: unknown }> {
-    if (this.nextError) throw this.nextError;
+    await Promise.resolve();
+    if (this.nextError) {
+      if (this.nextError instanceof Error) throw this.nextError;
+      throw Object.assign(new Error(), this.nextError);
+    }
     return { data: this.nextResponse };
   }
 }

@@ -15,20 +15,23 @@ import {
  */
 export class HcmDependencyUnavailableMock implements IHcmPort {
   public async getBalance(
-    employeeId: string,
-    locationId: string,
+    _employeeId: string,
+    _locationId: string,
   ): Promise<HcmBalanceDto> {
+    await Promise.resolve();
     return this.triggerSimulatedOutage();
   }
 
   public async deductBalance(
-    request: HcmDeductRequestDto,
-    lockKey: string,
+    _request: HcmDeductRequestDto,
+    _lockKey: string,
   ): Promise<HcmDeductResponseDto> {
+    await Promise.resolve();
     return this.triggerSimulatedOutage();
   }
 
-  public async processBatch(batch: HcmBatchDto): Promise<HcmBatchResponseDto> {
+  public async processBatch(_batch: HcmBatchDto): Promise<HcmBatchResponseDto> {
+    await Promise.resolve();
     return this.triggerSimulatedOutage();
   }
 

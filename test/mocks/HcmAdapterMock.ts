@@ -8,7 +8,6 @@ import {
   HcmBatchResultDto,
 } from '../../src/domain/schemas';
 import {
-  HcmDimensionMismatchError,
   HcmInsufficientBalanceError,
   HcmServerError,
 } from '../../src/domain/exceptions';
@@ -73,6 +72,7 @@ export class HcmAdapterMock implements IHcmPort {
     employeeId: string,
     locationId: string,
   ): Promise<HcmBalanceDto> {
+    await Promise.resolve();
     const ledger = this.balances.get(this.getMapKey(employeeId, locationId));
     if (!ledger) throw new Error('Dimension not found');
     return {
@@ -87,6 +87,7 @@ export class HcmAdapterMock implements IHcmPort {
     req: HcmDeductRequestDto,
     key: string,
   ): Promise<HcmDeductResponseDto> {
+    await Promise.resolve();
     this.callHistory.push(key);
     if (this.idempotencyRegistry.has(key))
       return this.idempotencyRegistry.get(key)!;
@@ -101,6 +102,7 @@ export class HcmAdapterMock implements IHcmPort {
   public async processBatch(
     payload: HcmBatchDto,
   ): Promise<HcmBatchResponseDto> {
+    await Promise.resolve();
     this.checkPreProcessingFailure();
     const results: HcmBatchResultDto[] = payload.balances.map((item) =>
       this.updateBalanceFromBatch(item, payload.generatedAt),

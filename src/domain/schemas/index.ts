@@ -52,4 +52,4 @@ export interface TimeOffRequestDto {
   readonly amount: number;
 }
 
-export interface BatchPayloadDto extends HcmBatchDto {}
+export type BatchPayloadDto = HcmBatchDto;

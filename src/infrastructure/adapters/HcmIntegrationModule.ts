@@ -40,11 +40,15 @@ export class NativeHttpClient implements IHttpClient {
     const isJson = response.headers
       .get('content-type')
       ?.includes('application/json');
-    const data = isJson ? await response.json() : await response.text();
+    const data: unknown = isJson
+      ? await response.json()
+      : await response.text();
 
     if (!response.ok) {
       // Formats the error to match the structure expected by HcmAdapter.analyzeErrorAndRetry
-      throw { response: { status: response.status, data } };
+      const errorObj = new Error('HTTP Request Failed');
+      Object.assign(errorObj, { response: { status: response.status, data } });
+      throw errorObj;
     }
 
     return data;
