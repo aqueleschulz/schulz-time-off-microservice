@@ -13,24 +13,28 @@ services:
       - HCM_BASE_URL=http://hcm-mock:9999
       - DATABASE_URL=file:/usr/src/app/data/time-off.db
     volumes:
-      - ./data:/usr/src/app/data
+      # Using a named volume to bypass host-level permission issues with SQLite
+      - sqlite_data:/usr/src/app/data
     depends_on:
       - hcm-mock
     networks:
       - hr-network
 
   hcm-mock:
-    image: node:20-alpine
+    build:
+      context: .
+      dockerfile: .dockerfile
     container_name: hcm-mock-server
-    working_dir: /usr/src/app
-    volumes:
-      - .:/usr/src/app
-    command: >
-      sh -c "npm install && npx ts-node test/integration/hcm-mock-server/start-mock.ts"
+    # Execute the pre-built distribution file directly instead of mounting 
+    # the entire workspace and running npm install on startup
+    command: ["node", "dist/test/integration/hcm-mock-server/start-mock.js"]
     ports:
       - "9999:9999"
     networks:
       - hr-network
+
+volumes:
+  sqlite_data:
 
 networks:
   hr-network:
