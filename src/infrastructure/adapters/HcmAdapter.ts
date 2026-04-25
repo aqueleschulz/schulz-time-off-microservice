@@ -44,7 +44,8 @@ export class HcmAdapter implements IHcmPort {
 
   constructor(private readonly nativeHttpClient: IHttpClient) {
     this.circuitBreakerInstance = new CircuitBreaker(
-      this.executeHttpCall.bind(this),
+      (httpAction: () => Promise<{ data: unknown }>) =>
+        this.executeHttpCall(httpAction),
       {
         errorThresholdPercentage: 50,
         resetTimeout: 30000,
