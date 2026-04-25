@@ -1,8 +1,5 @@
 import { Module } from '@nestjs/common';
-import {
-  TimeOffTransactionController,
-  BatchReconciliationController,
-} from './controllers/TimeOffTransactionController';
+import { TimeOffTransactionController } from './controllers/TimeOffTransactionController';
 import { TimeOffService } from '../domain/services/TimeOffService';
 import { IHcmPort } from '../domain/ports/IHcmPort';
 import { IBalanceRepository } from '../domain/ports/IBalanceRepository';
@@ -11,16 +8,16 @@ import { DefensiveDatabaseModule } from '../infrastructure/database/DefensiveDat
 import { HcmIntegrationModule } from '../infrastructure/adapters/HcmIntegrationModule';
 
 @Module({
-  imports: [DefensiveDatabaseModule, HcmIntegrationModule],
-  controllers: [TimeOffTransactionController, BatchReconciliationController],
+  imports: [HcmIntegrationModule, DefensiveDatabaseModule],
+  controllers: [TimeOffTransactionController],
   providers: [
     {
       provide: TimeOffService,
-      useFactory: (hcmPort: IHcmPort, repository: IBalanceRepository) => {
-        return new TimeOffService(hcmPort, repository);
-      },
+      useFactory: (hcm: IHcmPort, repo: IBalanceRepository) =>
+        new TimeOffService(hcm, repo),
       inject: [DI_TOKENS.HCM_PORT, DI_TOKENS.BALANCE_REPOSITORY],
     },
   ],
+  exports: [TimeOffService],
 })
 export class TimeOffFeatureModule {}

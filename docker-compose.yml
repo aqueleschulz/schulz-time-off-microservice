@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  time-off-app:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: time-off-microservice
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - HCM_BASE_URL=http://hcm-mock:9999
+      - DATABASE_URL=file:/usr/src/app/data/time-off.db
+    volumes:
+      - ./data:/usr/src/app/data
+    depends_on:
+      - hcm-mock
+    networks:
+      - hr-network
+
+  hcm-mock:
+    image: node:20-alpine
+    container_name: hcm-mock-server
+    working_dir: /usr/src/app
+    volumes:
+      - .:/usr/src/app
+    command: >
+      sh -c "npm install && npx ts-node test/integration/hcm-mock-server/start-mock.ts"
+    ports:
+      - "9999:9999"
+    networks:
+      - hr-network
+
+networks:
+  hr-network:
+    driver: bridge
