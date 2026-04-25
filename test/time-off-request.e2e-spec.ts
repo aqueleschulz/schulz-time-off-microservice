@@ -27,7 +27,7 @@ describe('Time-Off Request (e2e) - Defensive Idempotency', () => {
 
     nestApplication = moduleFixture.createNestApplication();
 
-    // FIX: Must mount global pipes and filters to match the production setup
+    // Must mount global pipes and filters to match the production setup
     nestApplication.useGlobalPipes(
       new ValidationPipe({
         whitelist: true,

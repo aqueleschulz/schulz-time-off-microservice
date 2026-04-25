@@ -19,14 +19,14 @@ export class SqliteDefensiveRepository implements IBalanceRepository {
     private readonly dbConnection: BetterSQLite3Database<typeof schema>,
   ) {}
 
-  public async executeAtomicTransaction<T>(
+  public async executeSequentially<T>(
     transactionCallback: (transactionalRepo: IBalanceRepository) => Promise<T>,
   ): Promise<T> {
-    // FIX: better-sqlite3 handles transactions synchronously. Awaiting macro tasks (like HCM HTTP calls)
+    // Better-sqlite3 handles transactions synchronously. Awaiting macro tasks (like HCM HTTP calls)
     // inside db.transaction forces premature commits and subsequent SqliteErrors.
     // Because SQLite natively locks the file sequentially, we execute directly for compatibility.
     return this.executeWithDatabaseResilience(
-      'executeAtomicTransaction',
+      'executeSequentially',
       async () => {
         return transactionCallback(this);
       },

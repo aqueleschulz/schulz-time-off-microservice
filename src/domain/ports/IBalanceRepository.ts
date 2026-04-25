@@ -4,7 +4,7 @@ export interface IBalanceRepository {
   /**
    * Executes a database block within a strict ACID transaction lock.
    */
-  executeAtomicTransaction<T>(
+  executeSequentially<T>(
     transactionCallback: (transactionalRepo: IBalanceRepository) => Promise<T>,
   ): Promise<T>;
 

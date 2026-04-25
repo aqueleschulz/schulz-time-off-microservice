@@ -32,6 +32,7 @@ To support our defensive strategy and ensure robust local validation, the databa
 * **Audit/Log Table (`transaction_audit_logs`)**
     * An append-only ledger crucial for dispute resolution when the local cache diverges from the HCM.
     * **Fields:** `id` (PK), `transaction_id` (UUID), `employee_id`, `action_type` (e.g., `LOCAL_DEDUCTION`, `BATCH_RECONCILIATION`), `amount_delta` (+/-), `source_system` (ExampleHR vs HCM), `created_at`.
+* **Sequential Integrity & Defensive Persistence:** Due to the internal architecture of `better-sqlite3`, which prioritizes performance through synchronous execution, the repository avoids asynchronous `db.transaction()` blocks that could lead to event-loop starvation or database locks during external HCM I/O. Instead, the service utilizes a **Defensive State Management** pattern, ensuring that database updates are atomic, one-way operations performed immediately after HCM confirmation, coupled with a local Mutex strategy to prevent concurrent write corruption in high-traffic scenarios.
 
 ## 4. API Contracts (REST Definitions)
 
@@ -191,3 +192,9 @@ To rigorously validate the system against the non-deterministic nature of the "I
 4. **Opossum (Circuit Breaker) vs. Manual Timeout Logic:**
     * *Alternative:* Implementing per-request timeout handling using native `Promise.race` or Axios configuration.
     * *Trade-off:* Manual timeouts only address individual request latency and do not prevent "death by a thousand cuts" when an upstream service is systematically failing. **Opossum** provides a stateful Circuit Breaker that monitors the aggregate health of the HCM integration. By tracking error thresholds (e.g., 50% failure rate), Opossum can "open" the circuit to fail-fast immediately. This preserves local system resources, such as memory and event-loop cycles, and is a mandatory prerequisite for implementing the "Fail Open" resilience strategy, allowing the microservice to maintain high availability even during total upstream outages.
+5.  **REST API vs. GraphQL:**
+    * *Decision:* The service implements a pure RESTful interface. 
+    * *Trade-off:* While GraphQL offers flexibility for data fetching, the "Minimal APIs" mandate of this microservice favors the strict, predictable contracts of REST. Given the defensive nature of the system, having explicit, type-safe endpoints for Idempotency and JIT Hydration provides better observability and easier debugging of the "Source of Truth" synchronization than a single GraphQL entry point.
+6.  **Synchronous SQLite Locking vs. Multi-writer Transactions:**
+    * *Decision:* Utilizing `better-sqlite3` in WAL mode with synchronous writes.
+    * *Rationale:* To fulfill the sub-200ms NFR, the overhead of managing complex asynchronous ACID transactions across network boundaries (Microservice <-> HCM) was traded for a faster, row-level locking strategy. This architectural choice prioritizes **system throughput** and **instant feedback**, delegating complex reconciliation to the Batch/Delta engine rather than blocking the main thread with pending database locks.

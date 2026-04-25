@@ -50,7 +50,7 @@ export class TimeOffService {
       return previouslyCachedResponse.responseBody as HcmDeductResponseDto;
     }
 
-    return this.localBalanceRepository.executeAtomicTransaction(
+    return this.localBalanceRepository.executeSequentially(
       async (transactionalRepo) => {
         return this.executeAtomicDeduction(
           timeOffRequest,
