@@ -162,6 +162,9 @@ Defensive programming dictates that we assume the HCM will frequently behave unp
 
 The development lifecycle enforces strict **Test/Spec Driven Development (TDD/SDD)** using the F.I.R.S.T principles (Fast, Independent, Repeatable, Self-validating, Timely). 
 
+* **Property-Based Testing for Concurrent Integrity**
+To rigorously validate the system against the non-deterministic nature of the "In-Flight Transaction Conflict", the test suite incorporates **fast-check** for Property-Based Testing (PBT). Unlike traditional unit tests that rely on static, example-based inputs, PBT "bombards" the `TimeOffService` with hundreds of randomly generated concurrent deduction sequences. This allows the system to verify a fundamental domain invariant: `Initial Balance == Final Balance + SUM(Approved Deductions)`, regardless of the volume, frequency, or interleaving of asynchronous requests. This approach is critical for surfacing subtle race conditions within the local SQLite row-locking and idempotency logic that standard test suites would likely bypass.
+
 * **Named Mock Classes:** We do not use inline dynamic stubs (e.g., `jest.fn().mockReturnValue(...)`) for architectural boundaries. We implement concrete, named mock classes (e.g., `HcmApiMockAdapter implements IHcmPort`) that contain actual state logic to simulate upstream behaviors reliably across the test suite.
 * **Mock Server Logic - Mid-Transaction 500 Error:**
     * The test suite instantiates the mock server with an `injectFailureOnNextCall()` directive. 
@@ -183,3 +186,9 @@ The development lifecycle enforces strict **Test/Spec Driven Development (TDD/SD
 3.  **Defensive Cache / JIT Hydration vs. 100% Synchronous Validation:**
     * *Alternative:* Dropping the SQLite cache entirely and making a synchronous HTTP call to the HCM for every single balance check and request.
     * *Trade-off:* While synchronous validation guarantees 100% data consistency, it creates a hard dependency on the HCM's uptime and latency. If the HCM takes 3 seconds to respond, ExampleHR's UI freezes for 3 seconds. The Defensive Cache + JIT Hydration trades a slight increase in architectural complexity (state management) for a massive gain in user experience (instant feedback) and system resilience (graceful degradation during outages).
+4. **Zod vs. Class-Validator (Decorators):**
+    * *Alternative:* Utilizing the NestJS-standard `class-validator` decorators for DTO validation.
+    * *Trade-off:* Decorators rely on `reflect-metadata` and experimental TypeScript features, creating a "magical" and opaque validation layer difficult to test in isolation. By choosing **Zod**, we achieve 100% type inference directly from the schema definitions, eliminating the redundancy of maintaining both TypeScript interfaces and validation classes. Zod’s functional, schema-first approach allows for complex data transformations and strict sanitization pipelines to be defined explicitly, ensuring that the domain layer remains "pure" and decoupled from the infrastructure's transport-specific quirks.
+5. **Opossum (Circuit Breaker) vs. Manual Timeout Logic:**
+    * *Alternative:* Implementing per-request timeout handling using native `Promise.race` or Axios configuration.
+    * *Trade-off:* Manual timeouts only address individual request latency and do not prevent "death by a thousand cuts" when an upstream service is systematically failing. **Opossum** provides a stateful Circuit Breaker that monitors the aggregate health of the HCM integration. By tracking error thresholds (e.g., 50% failure rate), Opossum can "open" the circuit to fail-fast immediately. This preserves local system resources, such as memory and event-loop cycles, and is a mandatory prerequisite for implementing the "Fail Open" resilience strategy, allowing the microservice to maintain high availability even during total upstream outages.

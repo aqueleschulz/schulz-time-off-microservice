@@ -60,6 +60,3 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 # data-base
 .db
 .db-journal
-
-#prettier
-.prettierrc

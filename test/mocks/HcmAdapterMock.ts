@@ -1,18 +1,25 @@
-import { IHcmPort } from '../../src/domain/ports/IHcmPort';
-import { 
-  HcmBalanceDto, 
-  HcmDeductRequestDto, 
-  HcmDeductResponseDto, 
-  HcmBatchDto, 
-  HcmBatchResponseDto 
+import {
+  HcmBalanceDto,
+  HcmDeductRequestDto,
+  HcmDeductResponseDto,
+  HcmBatchDto,
+  HcmBatchResponseDto,
+  HcmBatchBalanceDto,
+  HcmBatchResultDto,
 } from '../../src/domain/schemas';
-import { 
-  HcmDimensionMismatchError, 
-  HcmInsufficientBalanceError, 
-  HcmServerError 
+import {
+  HcmDimensionMismatchError,
+  HcmInsufficientBalanceError,
+  HcmServerError,
 } from '../../src/domain/exceptions';
+import { IHcmPort } from 'src/domain/ports/IHcmPort';
 
-export type FailureMode = 'none' | 'timeout' | '500_once' | '500_always' | '500_then_200';
+export type FailureMode =
+  | 'none'
+  | 'timeout'
+  | '500_once'
+  | '500_always'
+  | '500_then_200';
 
 /**
  * Stateful Mock representing the upstream HCM API.
@@ -23,8 +30,8 @@ export class HcmAdapterMock implements IHcmPort {
   private callHistory: string[] = [];
   private failureMode: FailureMode = 'none';
 
-  constructor() { 
-    this.seedInitialData(); 
+  constructor() {
+    this.seedInitialData();
   }
 
   // --- Test Helpers ---
@@ -37,10 +44,20 @@ export class HcmAdapterMock implements IHcmPort {
     this.seedInitialData();
   }
 
-  public grantBonus(employeeId: string, locationId: string, amount: number): void {
+  public grantBonus(
+    employeeId: string,
+    locationId: string,
+    amount: number,
+  ): void {
     const key = this.getMapKey(employeeId, locationId);
-    const current = this.balances.get(key) || { balance: 0, lastUpdated: new Date() };
-    this.balances.set(key, { balance: current.balance + amount, lastUpdated: new Date() });
+    const current = this.balances.get(key) || {
+      balance: 0,
+      lastUpdated: new Date(),
+    };
+    this.balances.set(key, {
+      balance: current.balance + amount,
+      lastUpdated: new Date(),
+    });
   }
 
   public setFailureMode(mode: FailureMode): void {
@@ -48,26 +65,34 @@ export class HcmAdapterMock implements IHcmPort {
   }
 
   public getCallCount(key: string): number {
-    return this.callHistory.filter(k => k === key).length;
+    return this.callHistory.filter((k) => k === key).length;
   }
 
   // --- IHcmPort Implementation ---
 
-  public async getBalance(employeeId: string, locationId: string): Promise<HcmBalanceDto> {
+  public async getBalance(
+    employeeId: string,
+    locationId: string,
+  ): Promise<HcmBalanceDto> {
     this.checkPreProcessingFailure();
     const key = this.getMapKey(employeeId, locationId);
     const ledger = this.balances.get(key);
 
-    if (!ledger) throw new HcmDimensionMismatchError(`Dimension not found: ${key}`);
+    if (!ledger)
+      throw new HcmDimensionMismatchError(`Dimension not found: ${key}`);
 
     return {
-      employeeId, locationId,
+      employeeId,
+      locationId,
       balance: ledger.balance,
-      lastUpdated: ledger.lastUpdated.toISOString()
+      lastUpdated: ledger.lastUpdated.toISOString(),
     };
   }
 
-  public async deductBalance(req: HcmDeductRequestDto, key: string): Promise<HcmDeductResponseDto> {
+  public async deductBalance(
+    req: HcmDeductRequestDto,
+    key: string,
+  ): Promise<HcmDeductResponseDto> {
     this.callHistory.push(key);
 
     if (this.idempotencyRegistry.has(key)) {
@@ -76,28 +101,36 @@ export class HcmAdapterMock implements IHcmPort {
 
     this.checkPreProcessingFailure(key);
     const response = this.executeDeduction(req, key);
-    
+
     // Critical: Throws AFTER deduction is internally recorded to simulate dropped connection
-    this.checkPostProcessingFailure(key); 
+    this.checkPostProcessingFailure(key);
 
     return response;
   }
 
-  public async processBatch(payload: HcmBatchDto): Promise<HcmBatchResponseDto> {
+  public async processBatch(
+    payload: HcmBatchDto,
+  ): Promise<HcmBatchResponseDto> {
     this.checkPreProcessingFailure();
-    const results = payload.balances.map(item => this.updateBalanceFromBatch(item, payload.generatedAt));
+
+    const results: HcmBatchResultDto[] = payload.balances.map((item) =>
+      this.updateBalanceFromBatch(item, payload.generatedAt),
+    );
 
     return {
       batchId: payload.batchId,
-      processedCount: results.filter(r => r.status === 'SUCCESS').length,
-      errorCount: results.filter(r => r.status === 'ERROR').length,
-      results
+      processedCount: results.filter((r) => r.status === 'SUCCESS').length,
+      errorCount: results.filter((r) => r.status === 'ERROR').length,
+      results,
     };
   }
 
   // --- Private Internal Logic ---
 
-  private executeDeduction(req: HcmDeductRequestDto, key: string): HcmDeductResponseDto {
+  private executeDeduction(
+    req: HcmDeductRequestDto,
+    key: string,
+  ): HcmDeductResponseDto {
     const ledgerKey = this.getMapKey(req.employeeId, req.locationId);
     const ledger = this.balances.get(ledgerKey);
 
@@ -106,35 +139,52 @@ export class HcmAdapterMock implements IHcmPort {
     }
 
     ledger.balance -= req.amount;
-    const response: HcmDeductResponseDto = { transactionId: `tx-${key}`, remainingBalance: ledger.balance, status: 'SUCCESS' };
-    
+    const response: HcmDeductResponseDto = {
+      transactionId: `tx-${key}`,
+      remainingBalance: ledger.balance,
+      status: 'SUCCESS',
+    };
+
     this.idempotencyRegistry.set(key, response);
     return response;
   }
 
-  private updateBalanceFromBatch(item: HcmBalanceDto, generatedAt: string) {
+  private updateBalanceFromBatch(
+    item: HcmBatchBalanceDto,
+    generatedAt: string,
+  ): HcmBatchResultDto {
     if (!item.employeeId || !item.locationId) {
-      return { employeeId: item.employeeId || 'UNKNOWN', status: 'ERROR' };
+      return {
+        employeeId: item.employeeId || 'UNKNOWN',
+        status: 'ERROR',
+        error: 'Missing dimensions',
+      };
     }
-    
+
     this.balances.set(this.getMapKey(item.employeeId, item.locationId), {
       balance: item.balance,
-      lastUpdated: new Date(generatedAt)
+      lastUpdated: new Date(generatedAt),
     });
-    
-    return { employeeId: item.employeeId, status: 'SUCCESS' };
+
+    return {
+      employeeId: item.employeeId,
+      status: 'SUCCESS',
+    };
   }
 
   private checkPreProcessingFailure(key?: string): void {
     const attempts = key ? this.getCallCount(key) : 1;
     if (this.failureMode === 'timeout') throw new Error('ETIMEDOUT');
     if (this.failureMode === '500_always') throw new HcmServerError('HCM 500');
-    if (this.failureMode === '500_once' && attempts === 1) throw new HcmServerError('Transient HCM Failure');
+    if (this.failureMode === '500_once' && attempts === 1)
+      throw new HcmServerError('Transient HCM Failure');
   }
 
   private checkPostProcessingFailure(key: string): void {
     if (this.failureMode === '500_then_200' && this.getCallCount(key) === 1) {
-      throw new HcmServerError('HCM Connection dropped after internal processing');
+      throw new HcmServerError(
+        'HCM Connection dropped after internal processing',
+      );
     }
   }
 

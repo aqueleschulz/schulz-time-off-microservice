@@ -1,5 +1,9 @@
 import { IBalanceRepository } from '../../src/domain/ports/IBalanceRepository';
-import { Balance, TransactionAuditLog, IdempotencyRecord } from '../../src/domain/entities';
+import {
+  Balance,
+  TransactionAuditLog,
+  IdempotencyRecord,
+} from '../../src/domain/entities';
 
 /**
  * In-memory simulator for SQLite database behavior.
@@ -10,34 +14,60 @@ export class LocalBalanceRepositoryMock implements IBalanceRepository {
   private auditLogs: TransactionAuditLog[] = [];
   private idempotencyKeys = new Map<string, IdempotencyRecord>();
   private rowLocks = new Set<string>();
-  
+
   private isCrashed = false;
   private latencyMs = 0;
   private queryCount = 0;
 
   // --- Test Helpers ---
 
-  public simulateCrash(crashed: boolean): void { this.isCrashed = crashed; }
-  public setLatency(ms: number): void { this.latencyMs = ms; }
-  public getQueryCount(): number { return this.queryCount; }
-  public resetQueryCount(): void { this.queryCount = 0; }
-  public getAuditLogs(): TransactionAuditLog[] { return this.auditLogs; }
-
-  public seed(empId: string, locId: string, amount: number, date = new Date()): void {
-    this.balances.set(`${empId}::${locId}`, { employeeId: empId, locationId: locId, amount, lastSync: date });
+  public simulateCrash(crashed: boolean): void {
+    this.isCrashed = crashed;
+  }
+  public setLatency(ms: number): void {
+    this.latencyMs = ms;
+  }
+  public getQueryCount(): number {
+    return this.queryCount;
+  }
+  public resetQueryCount(): void {
+    this.queryCount = 0;
+  }
+  public addAuditLog(entry: TransactionAuditLog): void {
+    this.auditLogs.push(entry);
+  }
+  public getAuditLogs(): TransactionAuditLog[] {
+    return this.auditLogs;
   }
 
-  /**
-   * Helper specifically designed to fix test assertions requiring a plain number.
-   */
-  public async getBalance(employeeId: string, locationId: string): Promise<number> {
+  public seed(
+    empId: string,
+    locId: string,
+    amount: number,
+    date = new Date(),
+  ): void {
+    this.balances.set(`${empId}::${locId}`, {
+      employeeId: empId,
+      locationId: locId,
+      amount,
+      lastSync: date,
+    });
+  }
+
+  public async getBalance(
+    employeeId: string,
+    locationId: string,
+  ): Promise<number> {
     const balance = await this.findBalance(employeeId, locationId);
     return balance ? balance.amount : 0;
   }
 
   // --- IBalanceRepository Implementation ---
 
-  public async findBalance(employeeId: string, locationId: string): Promise<Balance | null> {
+  public async findBalance(
+    employeeId: string,
+    locationId: string,
+  ): Promise<Balance | null> {
     await this.simulateIO();
     this.queryCount++;
     return this.balances.get(`${employeeId}::${locationId}`) || null;
@@ -48,7 +78,9 @@ export class LocalBalanceRepositoryMock implements IBalanceRepository {
     this.idempotencyKeys.set(record.key, record);
   }
 
-  public async getIdempotencyKey(key: string): Promise<IdempotencyRecord | null> {
+  public async getIdempotencyKey(
+    key: string,
+  ): Promise<IdempotencyRecord | null> {
     await this.simulateIO();
     const record = this.idempotencyKeys.get(key);
     if (!record) return null;
@@ -57,7 +89,11 @@ export class LocalBalanceRepositoryMock implements IBalanceRepository {
     return ageInHours > 24 ? null : record; // 24h TTL validation
   }
 
-  public async updateBalance(employeeId: string, locationId: string, amount: number): Promise<void> {
+  public async updateBalance(
+    employeeId: string,
+    locationId: string,
+    amount: number,
+  ): Promise<void> {
     await this.simulateIO();
     const key = `${employeeId}::${locationId}`;
     await this.acquireLock(key);
@@ -82,15 +118,16 @@ export class LocalBalanceRepositoryMock implements IBalanceRepository {
 
   private async acquireLock(key: string): Promise<void> {
     while (this.rowLocks.has(key)) {
-      await new Promise(resolve => setTimeout(resolve, 5));
+      await new Promise((resolve) => setTimeout(resolve, 5));
     }
     this.rowLocks.add(key);
   }
 
   private async simulateIO(): Promise<void> {
-    if (this.isCrashed) throw new Error('SQLITE_ERROR: Database connection lost');
+    if (this.isCrashed)
+      throw new Error('SQLITE_ERROR: Database connection lost');
     if (this.latencyMs > 0) {
-      await new Promise(resolve => setTimeout(resolve, this.latencyMs));
+      await new Promise((resolve) => setTimeout(resolve, this.latencyMs));
     }
   }
 }
