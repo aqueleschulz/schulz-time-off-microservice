@@ -19,11 +19,29 @@ export class SqliteDefensiveRepository implements IBalanceRepository {
     private readonly dbConnection: BetterSQLite3Database<typeof schema>,
   ) {}
 
+  /**
+   * Executes a callback within a strict ACID database transaction.
+   * WHY: SQLite locks the entire database file for writes (SERIALIZABLE isolation by default).
+   * This guarantees that concurrent requests for the same employee cannot cause race conditions.
+   * @example
+   * await repo.executeAtomicTransaction(async (txRepo) => { await txRepo.updateBalance(...) });
+   */
+  public async executeAtomicTransaction<T>(
+    transactionCallback: (transactionalRepo: IBalanceRepository) => Promise<T>,
+  ): Promise<T> {
+    return this.dbConnection.transaction(async (drizzleTx) => {
+      const transactionalRepository = new SqliteDefensiveRepository(
+        drizzleTx as unknown as BetterSQLite3Database<typeof schema>,
+      );
+      return transactionCallback(transactionalRepository);
+    });
+  }
+
   public async findBalance(
     targetEmployeeId: string,
     targetLocationId: string,
   ): Promise<Balance | null> {
-    return this.executeWithResilience('findBalance', async () => {
+    return this.executeWithDatabaseResilience('findBalance', async () => {
       const records = await this.dbConnection
         .select()
         .from(schema.timeOffBalancesTable)
@@ -43,7 +61,7 @@ export class SqliteDefensiveRepository implements IBalanceRepository {
     targetLocationId: string,
     newBalanceAmount: number,
   ): Promise<void> {
-    return this.executeWithResilience('updateBalance', async () => {
+    return this.executeWithDatabaseResilience('updateBalance', async () => {
       const existingRecord = await this.findBalance(
         targetEmployeeId,
         targetLocationId,
@@ -76,7 +94,7 @@ export class SqliteDefensiveRepository implements IBalanceRepository {
   public async recordTransaction(
     auditLogEntry: TransactionAuditLog,
   ): Promise<void> {
-    return this.executeWithResilience('recordTransaction', async () => {
+    return this.executeWithDatabaseResilience('recordTransaction', async () => {
       await this.dbConnection.insert(schema.transactionAuditLogsTable).values({
         id: randomUUID(),
         transactionId: auditLogEntry.transactionId || null,
@@ -93,22 +111,25 @@ export class SqliteDefensiveRepository implements IBalanceRepository {
   public async saveIdempotencyKey(
     idempotencyRecord: IdempotencyRecord,
   ): Promise<void> {
-    return this.executeWithResilience('saveIdempotencyKey', async () => {
-      await this.dbConnection.insert(schema.idempotencyKeysTable).values({
-        key: idempotencyRecord.key,
-        requestPayload: idempotencyRecord.requestPayload,
-        responseStatus: idempotencyRecord.responseStatus || null,
-        responseBody: idempotencyRecord.responseBody,
-        processedAt: idempotencyRecord.processedAt,
-        internallyProcessed: idempotencyRecord.internallyProcessed || false,
-      });
-    });
+    return this.executeWithDatabaseResilience(
+      'saveIdempotencyKey',
+      async () => {
+        await this.dbConnection.insert(schema.idempotencyKeysTable).values({
+          key: idempotencyRecord.key,
+          requestPayload: idempotencyRecord.requestPayload,
+          responseStatus: idempotencyRecord.responseStatus || null,
+          responseBody: idempotencyRecord.responseBody,
+          processedAt: idempotencyRecord.processedAt,
+          internallyProcessed: idempotencyRecord.internallyProcessed || false,
+        });
+      },
+    );
   }
 
   public async getIdempotencyKey(
     uniqueIdempotencyKey: string,
   ): Promise<IdempotencyRecord | null> {
-    return this.executeWithResilience('getIdempotencyKey', async () => {
+    return this.executeWithDatabaseResilience('getIdempotencyKey', async () => {
       const records = await this.dbConnection
         .select()
         .from(schema.idempotencyKeysTable)
@@ -131,25 +152,27 @@ export class SqliteDefensiveRepository implements IBalanceRepository {
     targetEmployeeId: string,
     sinceTimestamp: Date,
   ): Promise<TransactionAuditLog[]> {
-    return this.executeWithResilience('getPendingTransactions', async () => {
-      const records = await this.dbConnection
-        .select()
-        .from(schema.transactionAuditLogsTable)
-        .where(
-          and(
-            eq(schema.transactionAuditLogsTable.employeeId, targetEmployeeId),
-            gt(schema.transactionAuditLogsTable.createdAt, sinceTimestamp),
-          ),
-        );
+    return this.executeWithDatabaseResilience(
+      'getPendingTransactions',
+      async () => {
+        const records = await this.dbConnection
+          .select()
+          .from(schema.transactionAuditLogsTable)
+          .where(
+            and(
+              eq(schema.transactionAuditLogsTable.employeeId, targetEmployeeId),
+              gt(schema.transactionAuditLogsTable.createdAt, sinceTimestamp),
+            ),
+          );
 
-      return records.filter(
-        (r) => r.actionType === 'PENDING_HCM_ACK',
-      ) as TransactionAuditLog[];
-    });
+        return records.filter(
+          (r) => r.actionType === 'PENDING_HCM_ACK',
+        ) as TransactionAuditLog[];
+      },
+    );
   }
 
-  // Intercepta falhas brutas do Drizzle/SQLite e traduz para exceções de Domínio (Alvo B2)
-  private async executeWithResilience<T>(
+  private async executeWithDatabaseResilience<T>(
     operationName: string,
     databaseAction: () => Promise<T>,
   ): Promise<T> {

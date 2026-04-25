@@ -1,7 +1,6 @@
 import {
   sqliteTable,
   text,
-  real,
   integer,
   uniqueIndex,
 } from 'drizzle-orm/sqlite-core';
@@ -12,7 +11,7 @@ export const timeOffBalancesTable = sqliteTable(
     id: text('id').primaryKey(),
     employeeId: text('employee_id').notNull(),
     locationId: text('location_id').notNull(),
-    amount: real('amount').notNull(),
+    amount: integer('amount').notNull(), // Stored in Minutes (Integer)
     lastSync: integer('last_sync', { mode: 'timestamp' }).notNull(),
   },
   (table) => ({
@@ -28,9 +27,8 @@ export const transactionAuditLogsTable = sqliteTable('transaction_audit_logs', {
   transactionId: text('transaction_id'),
   employeeId: text('employee_id').notNull(),
   locationId: text('location_id').notNull(),
-  amount: real('amount').notNull(),
+  amount: integer('amount').notNull(), // Stored in Minutes (Integer)
   actionType: text('action_type').notNull(),
-  type: text('type'),
   sourceSystem: text('source_system'),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
 });

@@ -1,33 +1,29 @@
 import { Balance, TransactionAuditLog, IdempotencyRecord } from '../entities';
 
-/**
- * Outbound port establishing the contract for local defensive cache storage.
- * Enforces strict implementation to avoid test-aware logic leakage.
- * * @example
- * await repository.updateBalance('EMP_1', 'LOC_1', 8.0);
- */
 export interface IBalanceRepository {
-  findBalance(
-    targetEmployeeId: string,
-    targetLocationId: string,
-  ): Promise<Balance | null>;
+  /**
+   * Executes a database block within a strict ACID transaction lock.
+   */
+  executeAtomicTransaction<T>(
+    transactionCallback: (transactionalRepo: IBalanceRepository) => Promise<T>,
+  ): Promise<T>;
+
+  findBalance(employeeId: string, locationId: string): Promise<Balance | null>;
 
   updateBalance(
-    targetEmployeeId: string,
-    targetLocationId: string,
-    newBalanceAmount: number,
+    employeeId: string,
+    locationId: string,
+    amount: number,
   ): Promise<void>;
 
-  recordTransaction(auditLogEntry: TransactionAuditLog): Promise<void>;
+  recordTransaction(auditLog: TransactionAuditLog): Promise<void>;
 
-  saveIdempotencyKey(idempotencyRecord: IdempotencyRecord): Promise<void>;
+  saveIdempotencyKey(record: IdempotencyRecord): Promise<void>;
 
-  getIdempotencyKey(
-    uniqueIdempotencyKey: string,
-  ): Promise<IdempotencyRecord | null>;
+  getIdempotencyKey(key: string): Promise<IdempotencyRecord | null>;
 
   getPendingTransactions(
-    targetEmployeeId: string,
-    sinceTimestamp: Date,
+    employeeId: string,
+    since: Date,
   ): Promise<TransactionAuditLog[]>;
 }

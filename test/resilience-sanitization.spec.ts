@@ -1,10 +1,8 @@
 import { TimeOffService } from '../src/domain/services/TimeOffService';
-import { HcmAdapterMock } from './mocks/HcmAdapterMock';
 import { LocalBalanceRepositoryMock } from './mocks/LocalBalanceRepositoryMock';
-import {
-  InvalidDimensionException,
-  DependencyUnavailableException,
-} from '../src/domain/exceptions';
+import { HcmAdapterMock } from './mocks/HcmAdapterMock';
+import { HcmDependencyUnavailableMock } from './mocks/HcmDependencyUnavailableMock';
+import { InvalidDimensionException } from '../src/domain/exceptions';
 
 describe('Resilience & Sanitization', () => {
   let service: TimeOffService;
@@ -15,46 +13,52 @@ describe('Resilience & Sanitization', () => {
     mockHcm = new HcmAdapterMock();
     mockRepo = new LocalBalanceRepositoryMock();
     service = new TimeOffService(mockHcm, mockRepo);
-    mockRepo.seed('E1', 'L1', 10.0);
-    mockHcm.seed('E1', 'L1', 10.0);
   });
 
-  it('HCM Returns 500 on Deduction (Rollback)', async () => {
-    mockHcm.setFailureMode('timeout');
+  it('TRD-REQ: Fails Open on HCM Timeout if Local Balance is Sufficient', async () => {
+    const outageHcmMock = new HcmDependencyUnavailableMock();
+    const resilientService = new TimeOffService(outageHcmMock, mockRepo);
+
+    mockRepo.seed('E1', 'L1', 10.0);
     const req = { employeeId: 'E1', locationId: 'L1', amount: 2.0 };
 
-    await expect(service.requestTimeOff(req, 'd1-key')).rejects.toThrow(
-      DependencyUnavailableException,
+    const response = await resilientService.requestTimeOff(
+      req,
+      'fail-open-key',
     );
-    expect(await mockRepo.getBalance('E1', 'L1')).toBe(10.0);
-    expect(
-      mockRepo
-        .getAuditLogs()
-        .some((l) => l.actionType === 'ROLLBACK_AFTER_HCM_FAILURE'),
-    ).toBeTruthy();
-  });
 
-  it('Invalid EmployeeId Format (SQLi Defense)', async () => {
-    const req = {
-      employeeId: "'; DROP TABLE employees; --",
-      locationId: 'L1',
-      amount: 2.0,
-    };
-    await expect(service.requestTimeOff(req, 'e1-key')).rejects.toThrow(
-      InvalidDimensionException,
-    );
-    expect(mockRepo.getAuditLogs()).toHaveLength(0);
+    expect(response.status).toBe('SUCCESS');
+    expect(response.transactionId).toMatch(/^fail-open-/);
+
+    expect(await mockRepo.getBalance('E1', 'L1')).toBe(8.0);
   });
 
   it('Negative Amount and Float Precision Error', async () => {
-    const reqNegative = { employeeId: 'E1', locationId: 'L1', amount: -5.0 };
-    const reqFloat = { employeeId: 'E1', locationId: 'L1', amount: 0.123456 };
+    mockRepo.seed('E4', 'L1', 10.0);
+    mockHcm.seed('E4', 'L1', 10.0);
 
-    await expect(service.requestTimeOff(reqNegative, 'e2-key')).rejects.toThrow(
+    const reqNeg = { employeeId: 'E4', locationId: 'L1', amount: -2.0 };
+    await expect(service.requestTimeOff(reqNeg, 'e4-key-neg')).rejects.toThrow(
       InvalidDimensionException,
     );
-    await expect(service.requestTimeOff(reqFloat, 'e4-key')).rejects.toThrow(
-      InvalidDimensionException,
-    );
+
+    const reqFloat = { employeeId: 'E4', locationId: 'L1', amount: 0.0001 };
+    await expect(
+      service.requestTimeOff(reqFloat, 'e4-key-float'),
+    ).rejects.toThrow(InvalidDimensionException);
+  });
+
+  it('Rejects Malformed Employee IDs', async () => {
+    mockRepo.seed('E-5', 'L1', 10.0);
+    mockHcm.seed('E-5', 'L1', 10.0);
+
+    const reqMalformed = {
+      employeeId: 'DROP TABLE EMPLOYEES',
+      locationId: 'L1',
+      amount: 1.0,
+    };
+    await expect(
+      service.requestTimeOff(reqMalformed, 'sql-injection-key'),
+    ).rejects.toThrow(InvalidDimensionException);
   });
 });

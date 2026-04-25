@@ -111,7 +111,7 @@ describe('Adapter and Contract Integrity Validation', () => {
   it('Processes Retry Logic Successfully After Transient Upstream Failure', async () => {
     httpMock.nextError = { response: { status: 500 } };
     const retryPromise = adapter.deductBalance({} as never, 'retry-key');
-    
+
     httpMock.nextError = null;
     httpMock.nextResponse = {
       status: 'SUCCESS',

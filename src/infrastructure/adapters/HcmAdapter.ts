@@ -75,6 +75,19 @@ export class HcmAdapter implements IHcmPort {
     };
   }
 
+  private handleHttpError(error: any, req: HcmDeductRequestDto): never {
+  const status = error.response?.status;
+  if (status === 422) {
+    throw new InsufficientBalanceException(
+      req.employeeId, 
+      req.locationId, 
+      req.amount, 
+      error.response.data?.currentBalance || 0
+    );
+  }
+  throw new DependencyUnavailableException('HCM', error.code || 'HTTP_ERROR');
+}
+
   public async deductBalance(
     deductionRequestPayload: HcmDeductRequestDto,
     idempotencyLockKey: string,

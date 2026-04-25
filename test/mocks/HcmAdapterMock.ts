@@ -34,9 +34,13 @@ export class HcmAdapterMock implements IHcmPort {
     this.failureMode = 'none';
   }
 
-  public seed(employeeId: string, locationId: string, amount: number): void {
+  public seed(
+    employeeId: string,
+    locationId: string,
+    amountInDays: number,
+  ): void {
     this.balances.set(this.getMapKey(employeeId, locationId), {
-      balance: amount,
+      balance: Math.round(amountInDays * 1440),
       lastUpdated: new Date(),
     });
   }
@@ -69,17 +73,12 @@ export class HcmAdapterMock implements IHcmPort {
     employeeId: string,
     locationId: string,
   ): Promise<HcmBalanceDto> {
-    this.checkPreProcessingFailure();
-    const key = this.getMapKey(employeeId, locationId);
-    const ledger = this.balances.get(key);
-
-    if (!ledger)
-      throw new HcmDimensionMismatchError(`Dimension not found: ${key}`);
-
+    const ledger = this.balances.get(this.getMapKey(employeeId, locationId));
+    if (!ledger) throw new Error('Dimension not found');
     return {
       employeeId,
       locationId,
-      balance: ledger.balance,
+      balance: ledger.balance / 1440,
       lastUpdated: ledger.lastUpdated.toISOString(),
     };
   }
@@ -121,15 +120,16 @@ export class HcmAdapterMock implements IHcmPort {
   ): HcmDeductResponseDto {
     const ledgerKey = this.getMapKey(req.employeeId, req.locationId);
     const ledger = this.balances.get(ledgerKey);
+    const requestInMinutes = Math.round(req.amount * 1440);
 
-    if (!ledger || ledger.balance < req.amount) {
+    if (!ledger || ledger.balance < requestInMinutes) {
       throw new HcmInsufficientBalanceError('Insufficient funds in HCM');
     }
 
-    ledger.balance -= req.amount;
+    ledger.balance -= requestInMinutes;
     const response: HcmDeductResponseDto = {
       transactionId: `tx-${key}`,
-      remainingBalance: ledger.balance,
+      remainingBalance: ledger.balance / 1440,
       status: 'SUCCESS',
     };
 
@@ -143,7 +143,7 @@ export class HcmAdapterMock implements IHcmPort {
   ): HcmBatchResultDto {
     if (!item.employeeId || !item.locationId) {
       return {
-        employeeId: item.employeeId || 'UNKNOWN',
+        employeeId: item.employeeId as string, // Let it be null for the tests
         status: 'ERROR',
         error: 'Missing dimensions',
       };

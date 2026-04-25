@@ -24,7 +24,7 @@ To support our defensive strategy and ensure robust local validation, the databa
 
 * **Balances Table (`time_off_balances`)**
     * Acts as our intelligent local cache.
-    * **Fields:** `id` (PK), `employee_id` (Index), `location_id`, `balance_amount` (Float/Decimal), `last_sync_timestamp` (DateTime).
+    * **Fields:** `id` (PK), `employee_id` (Index), `location_id`, `balance_amount` (Integer), `last_sync_timestamp` (DateTime).
     * **Constraint:** Unique composite key on `(employee_id, location_id)` to prevent duplicate ledger entries.
 * **Idempotency Table (`idempotency_keys`)**
     * Vital for preventing duplicate time-off deductions during retry loops.
