@@ -18,11 +18,11 @@ describe('Idempotency and Batch Concurrency', () => {
     mockHcm.seed('EMP_X', 'LOC_1', 10.0);
 
     const req1 = service.requestTimeOff(
-      { employeeId: 'EMP_X', locationId: 'LOC_1', amount: 6.0 },
+      { employeeId: 'EMP_X', locationId: 'LOC_1', amount: 6.0, type: 'PTO' },
       'tx-key-alpha',
     );
     const req2 = service.requestTimeOff(
-      { employeeId: 'EMP_X', locationId: 'LOC_1', amount: 6.0 },
+      { employeeId: 'EMP_X', locationId: 'LOC_1', amount: 6.0, type: 'PTO' },
       'tx-key-beta',
     );
 
@@ -42,7 +42,7 @@ describe('Idempotency and Batch Concurrency', () => {
     mockHcm.seed('EMP_X', 'LOC_1', 10.0);
 
     await service.requestTimeOff(
-      { employeeId: 'EMP_X', locationId: 'LOC_1', amount: 4.0 },
+      { employeeId: 'EMP_X', locationId: 'LOC_1', amount: 4.0, type: 'PTO'},
       'old-key',
     );
 
@@ -53,7 +53,7 @@ describe('Idempotency and Batch Concurrency', () => {
     }
 
     await service.requestTimeOff(
-      { employeeId: 'EMP_X', locationId: 'LOC_1', amount: 4.0 },
+      { employeeId: 'EMP_X', locationId: 'LOC_1', amount: 4.0, type: 'PTO'},
       'old-key',
     );
 
@@ -79,7 +79,7 @@ describe('Idempotency and Batch Concurrency', () => {
     });
 
     const concReq = service.requestTimeOff(
-      { employeeId: 'EMP_X', locationId: 'LOC_1', amount: 1.0 },
+      { employeeId: 'EMP_X', locationId: 'LOC_1', amount: 1.0, type: 'PTO' },
       'conc-key',
     );
 

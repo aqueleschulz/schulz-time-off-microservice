@@ -6,7 +6,6 @@ import { HcmAdapterMock } from '../mocks/HcmAdapterMock';
 describe('Property-Based Invariants - TimeOffService', () => {
   it('PBT: Floating Point Precision Invariant (Exposes JS Math Drift)', async () => {
     const mathPrecisionProperty = fc.asyncProperty(
-      // Gera minutos inteiros e divide por 1440 para criar um Float limpo e perfeitamente fracionável
       fc.integer({ min: 144, max: 1296 }).map((m) => m / 1440),
       fc.integer({ min: 144, max: 1296 }).map((m) => m / 1440),
       async (initialFraction, deductionFraction) => {
@@ -19,7 +18,7 @@ describe('Property-Based Invariants - TimeOffService', () => {
         hcmMock.seed('E-MATH', 'L1', initialBalance);
 
         await service.requestTimeOff(
-          { employeeId: 'E-MATH', locationId: 'L1', amount: deductionFraction },
+          { employeeId: 'E-MATH', locationId: 'L1', amount: deductionFraction, type: 'PTO' },
           `lock-${Date.now()}`,
         );
 
@@ -44,7 +43,7 @@ describe('Property-Based Invariants - TimeOffService', () => {
 
     const concurrentRequests = Array.from({ length: 50 }).map((_, index) =>
       service.requestTimeOff(
-        { employeeId: 'E-RACE', locationId: 'L1', amount: 1.0 },
+        { employeeId: 'E-RACE', locationId: 'L1', amount: 1.0, type: 'PTO' },
         `race-lock-${index}`,
       ),
     );

@@ -22,6 +22,7 @@ describe('Resilience and Observability Guarantees', () => {
       employeeId: 'EMP_Y',
       locationId: 'LOC_1',
       amount: 5.0,
+      type: 'PTO'
     };
 
     await expect(
@@ -40,6 +41,7 @@ describe('Resilience and Observability Guarantees', () => {
       employeeId: 'EMP_Y',
       locationId: 'LOC_1',
       amount: 2.0,
+      type: 'PTO'
     };
     const sharedIdempotencyKey = 'split-brain-lock';
 
@@ -70,7 +72,7 @@ describe('Resilience and Observability Guarantees', () => {
 
   it('Ensures Complete Audit Log Generation for Every Local Deduction', async () => {
     await serviceInstanceA.requestTimeOff(
-      { employeeId: 'EMP_Y', locationId: 'LOC_1', amount: 3.0 },
+      { employeeId: 'EMP_Y', locationId: 'LOC_1', amount: 3.0 , type: 'PTO'},
       'audit-lock',
     );
     const transactionLogs = mockRepo.getAuditLogs();

@@ -20,7 +20,7 @@ describe('Resilience & Sanitization', () => {
     const resilientService = new TimeOffService(outageHcmMock, mockRepo);
 
     mockRepo.seed('E1', 'L1', 10.0);
-    const req = { employeeId: 'E1', locationId: 'L1', amount: 2.0 };
+    const req = { employeeId: 'E1', locationId: 'L1', amount: 2.0, type: 'PTO'};
 
     const response = await resilientService.requestTimeOff(
       req,
@@ -37,12 +37,12 @@ describe('Resilience & Sanitization', () => {
     mockRepo.seed('E4', 'L1', 10.0);
     mockHcm.seed('E4', 'L1', 10.0);
 
-    const reqNeg = { employeeId: 'E4', locationId: 'L1', amount: -2.0 };
+    const reqNeg = { employeeId: 'E4', locationId: 'L1', amount: -2.0, type: 'PTO'};
     await expect(service.requestTimeOff(reqNeg, 'e4-key-neg')).rejects.toThrow(
       InvalidDimensionException,
     );
 
-    const reqFloat = { employeeId: 'E4', locationId: 'L1', amount: 0.0001 };
+    const reqFloat = { employeeId: 'E4', locationId: 'L1', amount: 0.0001, type: 'PTO'};
     await expect(
       service.requestTimeOff(reqFloat, 'e4-key-float'),
     ).rejects.toThrow(InvalidDimensionException);
@@ -56,6 +56,7 @@ describe('Resilience & Sanitization', () => {
       employeeId: 'DROP TABLE EMPLOYEES',
       locationId: 'L1',
       amount: 1.0,
+      type: 'PTO'
     };
     await expect(
       service.requestTimeOff(reqMalformed, 'sql-injection-key'),

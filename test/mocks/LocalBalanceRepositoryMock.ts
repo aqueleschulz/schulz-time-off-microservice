@@ -118,7 +118,7 @@ export class LocalBalanceRepositoryMock implements IBalanceRepository {
 
   // --- IBalanceRepository Implementation ---
 
-  public async executeAtomicTransaction<T>(
+  public async executeSequentially<T>(
     transactionCallback: (transactionalRepo: IBalanceRepository) => Promise<T>,
   ): Promise<T> {
     await this.applyResilienceGuard();

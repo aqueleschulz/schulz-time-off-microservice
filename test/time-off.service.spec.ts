@@ -18,13 +18,13 @@ describe('TimeOffService - Critical Paths', () => {
     mockRepo.seed('E123', 'L1', 0.0);
     mockHcm.seed('E123', 'L1', 0.0);
 
-    // Como o HcmAdapterMock trata isto como minutos, multiplicamos por 1440 para garantir 5 Dias Reais
     mockHcm.grantBonus('E123', 'L1', 5.0 * 1440);
 
     const timeOffRequest = {
       employeeId: 'E123',
       locationId: 'L1',
       amount: 2.0,
+      type: 'PTO'
     };
     const response = await service.requestTimeOff(timeOffRequest, 'jit-lock-1');
 
@@ -40,6 +40,7 @@ describe('TimeOffService - Critical Paths', () => {
       employeeId: 'E456',
       locationId: 'L1',
       amount: 2.0,
+      type: 'PTO'
     };
 
     await expect(
