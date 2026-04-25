@@ -15,4 +15,8 @@ export interface IBalanceRepository {
   recordTransaction(entry: TransactionAuditLog): Promise<void>;
   saveIdempotencyKey(record: IdempotencyRecord): Promise<void>;
   getIdempotencyKey(key: string): Promise<IdempotencyRecord | null>;
+  getPendingTransactions?(
+    employeeId: string,
+    since: Date,
+  ): Promise<TransactionAuditLog[]>;
 }

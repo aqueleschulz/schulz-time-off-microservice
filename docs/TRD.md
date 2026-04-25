@@ -133,6 +133,8 @@ MS -> DB : UPDATE local balance to 1 day
 MS --> UI : 200 OK (Approved, Remaining: 1 day)
 @enduml
 
+* **DTO Segregation for Domain Purity:** To strictly adhere to Clean Architecture, domain-level schemas and interfaces (located in `src/domain/schemas/index.ts`) are kept "plain" and free of infrastructure-specific metadata. Framework-specific decorators, such as NestJS validation (`@IsString`, `@IsNumber`) and Swagger documentation (`@ApiProperty`), are exclusively applied to dedicated classes within the **Presentation Layer** (`src/presentation/dtos`). These presentation DTOs implement the domain interfaces, effectively shielding the application core from HTTP framework dependencies and preventing "framework leakage" into the business logic.
+
 ## 7. Batch Reconciliation Plan
 
 The `POST /sync/batch` endpoint acts as the system's self-healing mechanism, receiving the "whole corpus" of balances. However, applying a batch payload directly over a highly concurrent local cache introduces a severe race condition: **The In-Flight Transaction Conflict**.
@@ -186,9 +188,6 @@ To rigorously validate the system against the non-deterministic nature of the "I
 3.  **Defensive Cache / JIT Hydration vs. 100% Synchronous Validation:**
     * *Alternative:* Dropping the SQLite cache entirely and making a synchronous HTTP call to the HCM for every single balance check and request.
     * *Trade-off:* While synchronous validation guarantees 100% data consistency, it creates a hard dependency on the HCM's uptime and latency. If the HCM takes 3 seconds to respond, ExampleHR's UI freezes for 3 seconds. The Defensive Cache + JIT Hydration trades a slight increase in architectural complexity (state management) for a massive gain in user experience (instant feedback) and system resilience (graceful degradation during outages).
-4. **Zod vs. Class-Validator (Decorators):**
-    * *Alternative:* Utilizing the NestJS-standard `class-validator` decorators for DTO validation.
-    * *Trade-off:* Decorators rely on `reflect-metadata` and experimental TypeScript features, creating a "magical" and opaque validation layer difficult to test in isolation. By choosing **Zod**, we achieve 100% type inference directly from the schema definitions, eliminating the redundancy of maintaining both TypeScript interfaces and validation classes. Zod’s functional, schema-first approach allows for complex data transformations and strict sanitization pipelines to be defined explicitly, ensuring that the domain layer remains "pure" and decoupled from the infrastructure's transport-specific quirks.
-5. **Opossum (Circuit Breaker) vs. Manual Timeout Logic:**
+4. **Opossum (Circuit Breaker) vs. Manual Timeout Logic:**
     * *Alternative:* Implementing per-request timeout handling using native `Promise.race` or Axios configuration.
     * *Trade-off:* Manual timeouts only address individual request latency and do not prevent "death by a thousand cuts" when an upstream service is systematically failing. **Opossum** provides a stateful Circuit Breaker that monitors the aggregate health of the HCM integration. By tracking error thresholds (e.g., 50% failure rate), Opossum can "open" the circuit to fail-fast immediately. This preserves local system resources, such as memory and event-loop cycles, and is a mandatory prerequisite for implementing the "Fail Open" resilience strategy, allowing the microservice to maintain high availability even during total upstream outages.
