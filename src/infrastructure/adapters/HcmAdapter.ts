@@ -23,151 +23,185 @@ import {
 } from '../../domain/exceptions';
 
 export interface IHttpClient {
-  get(url: string): Promise<{ data: unknown }>;
+  get(endpointUrl: string): Promise<{ data: unknown }>;
   post(
-    url: string,
-    data?: unknown,
-    config?: unknown,
+    endpointUrl: string,
+    requestPayload?: unknown,
+    requestConfig?: unknown,
   ): Promise<{ data: unknown }>;
 }
 
-export class HcmAdapter implements IHcmPort {
-  private breaker: CircuitBreaker;
+interface HcmErrorResponse {
+  code?: string;
+  response?: {
+    status?: number;
+    data?: { code?: string; error?: string };
+  };
+}
 
-  constructor(private readonly httpClient: IHttpClient) {
-    this.breaker = new CircuitBreaker(this.executeHttp.bind(this), {
-      errorThresholdPercentage: 50,
-      resetTimeout: 30000,
-      volumeThreshold: 5,
-    });
+export class HcmAdapter implements IHcmPort {
+  private circuitBreakerInstance: CircuitBreaker;
+
+  constructor(private readonly nativeHttpClient: IHttpClient) {
+    this.circuitBreakerInstance = new CircuitBreaker(
+      this.executeHttpCall.bind(this),
+      {
+        errorThresholdPercentage: 50,
+        resetTimeout: 30000,
+        volumeThreshold: 5,
+      },
+    );
   }
 
-public async getBalance(
-    employeeId: string,
-    locationId: string,
+  public async getBalance(
+    targetEmployeeId: string,
+    targetLocationId: string,
   ): Promise<HcmBalanceDto> {
-    const action = () =>
-      this.httpClient.get(
-        `/hcm/balance?employeeId=${employeeId}&locationId=${locationId}`,
+    const fetchAction = () =>
+      this.nativeHttpClient.get(
+        `/hcm/balance?employeeId=${targetEmployeeId}&locationId=${targetLocationId}`,
       );
-    const data = await this.sendWithResilience(action);
-    const parsed = this.validateSchema(HcmBalanceResponseSchema, data);
+    const rawData = await this.dispatchWithResilience(fetchAction);
+    const validatedData = this.enforceSchemaValidation(
+      HcmBalanceResponseSchema,
+      rawData,
+    );
 
     return {
-      employeeId: parsed.employeeId,
-      locationId: parsed.locationId,
-      balance: parsed.balance,
-      lastUpdated: parsed.lastUpdated ?? new Date().toISOString(),
+      employeeId: validatedData.employeeId,
+      locationId: validatedData.locationId,
+      balance: validatedData.balance,
+      lastUpdated: validatedData.lastUpdated ?? new Date().toISOString(),
     };
   }
 
   public async deductBalance(
-    req: HcmDeductRequestDto,
-    key: string,
+    deductionRequestPayload: HcmDeductRequestDto,
+    idempotencyLockKey: string,
   ): Promise<HcmDeductResponseDto> {
-    const action = () =>
-      this.httpClient.post('/hcm/deduct', req, {
-        headers: { 'Idempotency-Key': key },
+    const postAction = () =>
+      this.nativeHttpClient.post('/hcm/deduct', deductionRequestPayload, {
+        headers: { 'Idempotency-Key': idempotencyLockKey },
       });
-    const data = await this.sendWithResilience(action);
-    return this.validateSchema(HcmDeductResponseSchema, data);
+    const rawData = await this.dispatchWithResilience(postAction);
+    return this.enforceSchemaValidation(HcmDeductResponseSchema, rawData);
   }
 
   public async processBatch(
-    payload: HcmBatchDto,
+    reconciliationBatchPayload: HcmBatchDto,
   ): Promise<HcmBatchResponseDto> {
-    this.validateSchema(HcmBatchPayloadSchema, payload);
+    this.enforceSchemaValidation(
+      HcmBatchPayloadSchema,
+      reconciliationBatchPayload,
+    );
+    const STALE_BATCH_THRESHOLD = new Date('2025-01-01').getTime();
+
     if (
-      new Date(payload.generatedAt).getTime() < new Date('2025-01-01').getTime()
+      new Date(reconciliationBatchPayload.generatedAt).getTime() <
+      STALE_BATCH_THRESHOLD
     ) {
       throw new StaleBatchException(
-        payload.generatedAt,
+        reconciliationBatchPayload.generatedAt,
         new Date().toISOString(),
       );
     }
-    await this.sendWithResilience(() =>
-      this.httpClient.post('/sync/batch', payload),
+
+    await this.dispatchWithResilience(() =>
+      this.nativeHttpClient.post('/sync/batch', reconciliationBatchPayload),
     );
+
     return {
-      batchId: payload.batchId,
-      processedCount: payload.balances.length,
+      batchId: reconciliationBatchPayload.batchId,
+      processedCount: reconciliationBatchPayload.balances.length,
       errorCount: 0,
       results: [],
     };
   }
 
-  // --- Private Internal Logic ---
-
-  private async executeHttp(
-    action: () => Promise<{ data: unknown }>,
+  private async executeHttpCall(
+    httpAction: () => Promise<{ data: unknown }>,
   ): Promise<unknown> {
-    const response = await action();
-    let data = response.data;
-    if (typeof data === 'string') {
+    const httpResponse = await httpAction();
+    let responseData = httpResponse.data;
+
+    if (typeof responseData === 'string') {
       try {
-        data = JSON.parse(data);
-      } catch (e) {
+        responseData = JSON.parse(responseData);
+      } catch (parseError) {
         throw { code: 'JSON_PARSE_ERROR' };
       }
     }
-
-    // Test Compatibility Patch: Resolves conflict between Test 4 (Strict schema) and Test 9 (Loose mock)
-    const record = data as Record<string, unknown>;
-    if (
-      record &&
-      record.transactionId === 'tx-1' &&
-      record.remainingBalance === undefined
-    ) {
-      record.remainingBalance = 0;
-    }
-    return data;
+    return responseData;
   }
 
-  private async sendWithResilience(
-    action: () => Promise<{ data: unknown }>,
+  private async dispatchWithResilience(
+    httpAction: () => Promise<{ data: unknown }>,
   ): Promise<unknown> {
-    const delays = [100, 200, 400];
-    for (let attempt = 0; attempt < 3; attempt++) {
+    const exponentialDelaysMs = [100, 200, 400];
+
+    for (let currentAttempt = 0; currentAttempt < 3; currentAttempt++) {
       try {
-        return await this.breaker.fire(action);
-      } catch (err: unknown) {
-        await this.analyzeErrorAndRetry(err, delays[attempt], attempt);
+        return await this.circuitBreakerInstance.fire(httpAction);
+      } catch (caughtError: unknown) {
+        await this.evaluateErrorAndRetry(
+          caughtError,
+          exponentialDelaysMs[currentAttempt],
+          currentAttempt,
+        );
       }
     }
     throw new DependencyUnavailableException('HCM', 'Max Retries Reached');
   }
 
-  private async analyzeErrorAndRetry(
-    err: unknown,
-    delay: number,
-    attempt: number,
+  private async evaluateErrorAndRetry(
+    caughtError: unknown,
+    sleepDelayMs: number,
+    currentAttempt: number,
   ): Promise<void> {
-    const error = err as Record<string, unknown>;
-    if (error?.code === 'EOPENBREAKER')
+    if (!this.isValidErrorObject(caughtError))
+      throw new DependencyUnavailableException('HCM', 'Invalid Error Format');
+
+    if (caughtError.code === 'EOPENBREAKER')
       throw new CircuitBreakerOpenException('HCM');
-    if (error?.code === 'JSON_PARSE_ERROR')
+    if (caughtError.code === 'JSON_PARSE_ERROR')
       throw new HcmContractViolationException('JSON_PARSE_ERROR');
 
-    const response = error?.response as Record<string, unknown> | undefined;
-    const status = response?.status as number | undefined;
-    const data = response?.data as Record<string, string> | undefined;
+    const httpStatus = caughtError.response?.status;
+    const errorData = caughtError.response?.data;
 
-    if (status === 422)
-      throw new InsufficientBalanceException(data?.code || 'ERR', 'N/A', 0, 0);
-    if (status === 404)
-      throw new InvalidDimensionException('locationId', data?.error || 'N/A');
-    if (attempt === 2 || (status && status < 500))
+    if (httpStatus === 422)
+      throw new InsufficientBalanceException(
+        errorData?.code || 'ERR',
+        'N/A',
+        0,
+        0,
+      );
+    if (httpStatus === 404)
+      throw new InvalidDimensionException(
+        'locationId',
+        errorData?.error || 'N/A',
+      );
+    if (currentAttempt === 2 || (httpStatus && httpStatus < 500))
       throw new DependencyUnavailableException('HCM', 'HTTP Error');
 
-    await new Promise((resolve) => setTimeout(resolve, delay));
+    await new Promise((resolve) => setTimeout(resolve, sleepDelayMs));
   }
 
-  private validateSchema<T>(schema: z.ZodType<T>, data: unknown): T {
-    const result = schema.safeParse(data);
-    if (!result.success)
+  private isValidErrorObject(
+    caughtError: unknown,
+  ): caughtError is HcmErrorResponse {
+    return typeof caughtError === 'object' && caughtError !== null;
+  }
+
+  private enforceSchemaValidation<T>(
+    zodSchema: z.ZodType<T>,
+    incomingData: unknown,
+  ): T {
+    const validationResult = zodSchema.safeParse(incomingData);
+    if (!validationResult.success)
       throw new HcmContractViolationException(
         'Missing field or invalid schema',
       );
-    return result.data;
+    return validationResult.data;
   }
 }

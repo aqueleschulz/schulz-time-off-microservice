@@ -13,6 +13,7 @@ describe('Resilience and Observability Guarantees', () => {
     mockHcm = new HcmAdapterMock();
     serviceInstanceA = new TimeOffService(mockHcm, mockRepo);
     mockRepo.seed('EMP_Y', 'LOC_1', 20.0);
+    mockHcm.seed('EMP_Y', 'LOC_1', 20.0);
   });
 
   it('Maintains Data Integrity Following SQLite Connection Loss Mid Transaction', async () => {
@@ -42,32 +43,28 @@ describe('Resilience and Observability Guarantees', () => {
     };
     const sharedIdempotencyKey = 'split-brain-lock';
 
-    // Instance A processes the request successfully
     await serviceInstanceA.requestTimeOff(
       deductionRequest,
       sharedIdempotencyKey,
     );
 
-    // Instance B spins up, sharing the same database repository
     const serviceInstanceB = new TimeOffService(mockHcm, mockRepo);
     const responseFromB = await serviceInstanceB.requestTimeOff(
       deductionRequest,
       sharedIdempotencyKey,
     );
 
-    // Instance B must return the cached success response without calling the HCM again
     expect(mockHcm.getCallCount(sharedIdempotencyKey)).toBe(1);
     expect(responseFromB.status).toBe('SUCCESS');
   });
 
   it('Fails Gracefully When Query Duration Exceeds Minimum Response Threshold', async () => {
-    mockRepo.setLatency(250); // Simulating a massive disk I/O spike
+    mockRepo.setLatency(250);
     const requestStartTime = Date.now();
 
     await serviceInstanceA.getBalance('EMP_Y', 'LOC_1');
     const totalExecutionTime = Date.now() - requestStartTime;
 
-    // Validates the non-functional requirement constraint
     expect(totalExecutionTime).toBeGreaterThanOrEqual(250);
   });
 
@@ -89,7 +86,6 @@ describe('Resilience and Observability Guarantees', () => {
     mockRepo.resetQueryCount();
     await serviceInstanceA.getBalance('EMP_Y', 'LOC_1');
 
-    // Ensures a single indexed lookup is performed without cascading queries
     expect(mockRepo.getQueryCount()).toBe(1);
   });
 });

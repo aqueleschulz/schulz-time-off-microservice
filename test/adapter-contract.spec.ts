@@ -8,9 +8,6 @@ import {
   StaleBatchException,
 } from '../src/domain/exceptions';
 
-/**
- * Mocking the HTTP layer to isolate external I/O from the Adapter logic.
- */
 class HttpClientMock {
   public nextResponse: unknown = null;
   public nextError: unknown = null;
@@ -32,7 +29,6 @@ describe('Adapter and Contract Integrity Validation', () => {
 
   beforeEach(() => {
     httpMock = new HttpClientMock();
-    // Injecting the mock bypassing strict typing for the constructor isolated test
     adapter = new HcmAdapter(httpMock as never);
   });
 
@@ -65,7 +61,6 @@ describe('Adapter and Contract Integrity Validation', () => {
   });
 
   it('Validates Unexpected Response Schema Missing Required Fields', async () => {
-    // Missing 'remainingBalance' field expected by the domain contract
     httpMock.nextResponse = { transactionId: 'tx-123' };
     await expect(
       adapter.deductBalance({} as never, 'schema-key'),
@@ -74,11 +69,9 @@ describe('Adapter and Contract Integrity Validation', () => {
 
   it('Activates Circuit Breaker After Consecutive Failures Limit', async () => {
     httpMock.nextError = { code: 'ETIMEDOUT' };
-    // Simulating consecutive connection drops
     for (let i = 0; i < 5; i++) {
       await adapter.deductBalance({} as never, `cb-key-${i}`).catch(() => {});
     }
-    // The next attempt should fail fast without reaching the HTTP client
     await expect(
       adapter.deductBalance({} as never, 'cb-key-6'),
     ).rejects.toThrow(CircuitBreakerOpenException);
@@ -95,7 +88,6 @@ describe('Adapter and Contract Integrity Validation', () => {
   });
 
   it('Detects and Rejects Stale Batch Timestamps Older Than Local State', async () => {
-    // Adapter must compare this generatedAt with the local persistence timestamp
     const staleBatchPayload = {
       batchId: 'batch-02',
       generatedAt: '2020-01-01T00:00:00Z',
@@ -119,10 +111,13 @@ describe('Adapter and Contract Integrity Validation', () => {
   it('Processes Retry Logic Successfully After Transient Upstream Failure', async () => {
     httpMock.nextError = { response: { status: 500 } };
     const retryPromise = adapter.deductBalance({} as never, 'retry-key');
-
-    // Simulating adapter internal retry success on the second attempt
+    
     httpMock.nextError = null;
-    httpMock.nextResponse = { status: 'SUCCESS', transactionId: 'tx-1' };
+    httpMock.nextResponse = {
+      status: 'SUCCESS',
+      transactionId: 'tx-1',
+      remainingBalance: 7.0,
+    };
 
     await expect(retryPromise).resolves.toBeDefined();
   });

@@ -12,7 +12,7 @@ import {
   HcmInsufficientBalanceError,
   HcmServerError,
 } from '../../src/domain/exceptions';
-import { IHcmPort } from 'src/domain/ports/IHcmPort';
+import { IHcmPort } from '../../src/domain/ports/IHcmPort';
 
 export type FailureMode =
   | 'none'
@@ -21,27 +21,24 @@ export type FailureMode =
   | '500_always'
   | '500_then_200';
 
-/**
- * Stateful Mock representing the upstream HCM API.
- */
 export class HcmAdapterMock implements IHcmPort {
   private balances = new Map<string, { balance: number; lastUpdated: Date }>();
   private idempotencyRegistry = new Map<string, HcmDeductResponseDto>();
   private callHistory: string[] = [];
   private failureMode: FailureMode = 'none';
 
-  constructor() {
-    this.seedInitialData();
-  }
-
-  // --- Test Helpers ---
-
   public reset(): void {
     this.balances.clear();
     this.idempotencyRegistry.clear();
     this.callHistory = [];
     this.failureMode = 'none';
-    this.seedInitialData();
+  }
+
+  public seed(employeeId: string, locationId: string, amount: number): void {
+    this.balances.set(this.getMapKey(employeeId, locationId), {
+      balance: amount,
+      lastUpdated: new Date(),
+    });
   }
 
   public grantBonus(
@@ -68,8 +65,6 @@ export class HcmAdapterMock implements IHcmPort {
     return this.callHistory.filter((k) => k === key).length;
   }
 
-  // --- IHcmPort Implementation ---
-
   public async getBalance(
     employeeId: string,
     locationId: string,
@@ -94,15 +89,11 @@ export class HcmAdapterMock implements IHcmPort {
     key: string,
   ): Promise<HcmDeductResponseDto> {
     this.callHistory.push(key);
-
-    if (this.idempotencyRegistry.has(key)) {
-      return this.idempotencyRegistry.get(key)!; // Idempotent cache hit
-    }
+    if (this.idempotencyRegistry.has(key))
+      return this.idempotencyRegistry.get(key)!;
 
     this.checkPreProcessingFailure(key);
     const response = this.executeDeduction(req, key);
-
-    // Critical: Throws AFTER deduction is internally recorded to simulate dropped connection
     this.checkPostProcessingFailure(key);
 
     return response;
@@ -112,7 +103,6 @@ export class HcmAdapterMock implements IHcmPort {
     payload: HcmBatchDto,
   ): Promise<HcmBatchResponseDto> {
     this.checkPreProcessingFailure();
-
     const results: HcmBatchResultDto[] = payload.balances.map((item) =>
       this.updateBalanceFromBatch(item, payload.generatedAt),
     );
@@ -124,8 +114,6 @@ export class HcmAdapterMock implements IHcmPort {
       results,
     };
   }
-
-  // --- Private Internal Logic ---
 
   private executeDeduction(
     req: HcmDeductRequestDto,
@@ -160,16 +148,11 @@ export class HcmAdapterMock implements IHcmPort {
         error: 'Missing dimensions',
       };
     }
-
     this.balances.set(this.getMapKey(item.employeeId, item.locationId), {
       balance: item.balance,
       lastUpdated: new Date(generatedAt),
     });
-
-    return {
-      employeeId: item.employeeId,
-      status: 'SUCCESS',
-    };
+    return { employeeId: item.employeeId, status: 'SUCCESS' };
   }
 
   private checkPreProcessingFailure(key?: string): void {
@@ -186,11 +169,6 @@ export class HcmAdapterMock implements IHcmPort {
         'HCM Connection dropped after internal processing',
       );
     }
-  }
-
-  private seedInitialData(): void {
-    this.balances.set('E123::L1', { balance: 10.0, lastUpdated: new Date() });
-    this.balances.set('E-TEST::L1', { balance: 50.0, lastUpdated: new Date() });
   }
 
   private getMapKey(employeeId: string, locationId: string): string {

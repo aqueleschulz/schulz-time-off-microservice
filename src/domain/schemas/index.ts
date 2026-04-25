@@ -2,7 +2,6 @@
  * DTOs defining the rigid contracts for external communication.
  * No generic un-typed objects are allowed crossing the domain boundary.
  */
-
 export interface HcmBalanceDto {
   readonly employeeId: string;
   readonly locationId: string;

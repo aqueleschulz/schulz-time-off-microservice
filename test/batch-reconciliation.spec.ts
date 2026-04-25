@@ -14,9 +14,13 @@ describe('Batch Reconciliation', () => {
 
   it('In-Flight Transaction During Batch', async () => {
     mockRepo.seed('E1', 'L1', 10.0, new Date('2026-04-24T14:00:00Z'));
+
     mockRepo.addAuditLog({
-      type: 'PENDING_HCM_ACK',
+      employeeId: 'E1',
+      locationId: 'L1',
       amount: 3.0,
+      actionType: 'PENDING_HCM_ACK',
+      sourceSystem: 'ExampleHR',
       createdAt: new Date('2026-04-24T14:05:00Z'),
     });
 

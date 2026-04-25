@@ -5,11 +5,16 @@ import { LocalBalanceRepositoryMock } from './mocks/LocalBalanceRepositoryMock';
 describe('Idempotency and Batch Concurrency', () => {
   let service: TimeOffService;
   let mockRepo: LocalBalanceRepositoryMock;
+  let mockHcm: HcmAdapterMock;
 
   beforeEach(() => {
     mockRepo = new LocalBalanceRepositoryMock();
-    service = new TimeOffService(new HcmAdapterMock(), mockRepo);
+    mockHcm = new HcmAdapterMock();
+    service = new TimeOffService(mockHcm, mockRepo);
+
+    // Critical fix: Synchronize state between local mock and HCM mock
     mockRepo.seed('EMP_X', 'LOC_1', 10.0);
+    mockHcm.seed('EMP_X', 'LOC_1', 10.0);
   });
 
   it('Concurrent Requests with Different Keys for Same Employee', async () => {
@@ -63,6 +68,7 @@ describe('Idempotency and Batch Concurrency', () => {
       generatedAt: new Date().toISOString(),
       balances: batchBalances,
     });
+
     const concReq = service.requestTimeOff(
       { employeeId: 'EMP_X', locationId: 'LOC_1', amount: 1.0 },
       'conc-key',

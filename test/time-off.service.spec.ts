@@ -16,6 +16,7 @@ describe('TimeOffService - Critical Paths', () => {
     mockRepo = new LocalBalanceRepositoryMock();
     service = new TimeOffService(mockHcm, mockRepo);
     mockRepo.seed('E123', 'L1', 10.0);
+    mockHcm.seed('E123', 'L1', 10.0);
   });
 
   it('Duplicate Request with Identical Payload', async () => {
@@ -47,6 +48,7 @@ describe('TimeOffService - Critical Paths', () => {
 
   it('Local Cache Stale (HCM Granted Bonus)', async () => {
     mockRepo.seed('E123', 'L1', 0.0);
+    mockHcm.seed('E123', 'L1', 0.0);
     mockHcm.grantBonus('E123', 'L1', 5.0);
 
     const req = { employeeId: 'E123', locationId: 'L1', amount: 2.0 };
@@ -55,12 +57,13 @@ describe('TimeOffService - Critical Paths', () => {
     expect(res.status).toBe('SUCCESS');
     expect(await mockRepo.getBalance('E123', 'L1')).toBe(3.0);
     expect(
-      mockRepo.getAuditLogs().some((l) => l.type === 'JIT_HYDRATION'),
+      mockRepo.getAuditLogs().some((l) => l.actionType === 'JIT_HYDRATION'),
     ).toBeTruthy();
   });
 
   it('JIT Hydration Fails (HCM Timeout)', async () => {
     mockRepo.seed('E123', 'L1', 0.0);
+    mockHcm.seed('E123', 'L1', 0.0);
     mockHcm.setFailureMode('timeout');
 
     const req = { employeeId: 'E123', locationId: 'L1', amount: 2.0 };
@@ -74,6 +77,7 @@ describe('TimeOffService - Critical Paths', () => {
   it('JIT Hydration Reveals Negative Balance', async () => {
     mockRepo.seed('E123', 'L1', 5.0);
     mockHcm.reset();
+    mockHcm.seed('E123', 'L1', 0.0); // Reset forces sync strictly to zero
     mockHcm.grantBonus('E123', 'L1', -2.0);
 
     const req = { employeeId: 'E123', locationId: 'L1', amount: 1.0 };

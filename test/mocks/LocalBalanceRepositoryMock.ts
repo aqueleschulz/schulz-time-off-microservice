@@ -4,11 +4,8 @@ import {
   TransactionAuditLog,
   IdempotencyRecord,
 } from '../../src/domain/entities';
+import { DependencyUnavailableException } from '../../src/domain/exceptions';
 
-/**
- * In-memory simulator for SQLite database behavior.
- * Provides explicit test helpers to validate domain logic and NFRs.
- */
 export class LocalBalanceRepositoryMock implements IBalanceRepository {
   private balances = new Map<string, Balance>();
   private auditLogs: TransactionAuditLog[] = [];
@@ -18,8 +15,6 @@ export class LocalBalanceRepositoryMock implements IBalanceRepository {
   private isCrashed = false;
   private latencyMs = 0;
   private queryCount = 0;
-
-  // --- Test Helpers ---
 
   public simulateCrash(crashed: boolean): void {
     this.isCrashed = crashed;
@@ -62,8 +57,6 @@ export class LocalBalanceRepositoryMock implements IBalanceRepository {
     return balance ? balance.amount : 0;
   }
 
-  // --- IBalanceRepository Implementation ---
-
   public async findBalance(
     employeeId: string,
     locationId: string,
@@ -86,7 +79,7 @@ export class LocalBalanceRepositoryMock implements IBalanceRepository {
     if (!record) return null;
 
     const ageInHours = (Date.now() - record.processedAt.getTime()) / 3600000;
-    return ageInHours > 24 ? null : record; // 24h TTL validation
+    return ageInHours > 24 ? null : record;
   }
 
   public async updateBalance(
@@ -103,6 +96,13 @@ export class LocalBalanceRepositoryMock implements IBalanceRepository {
       if (current) {
         current.amount = amount;
         current.lastSync = new Date();
+      } else {
+        this.balances.set(key, {
+          employeeId,
+          locationId,
+          amount,
+          lastSync: new Date(),
+        });
       }
     } finally {
       this.rowLocks.delete(key);
@@ -114,18 +114,29 @@ export class LocalBalanceRepositoryMock implements IBalanceRepository {
     this.auditLogs.push(entry);
   }
 
-  // --- Private Internal Logic ---
+  public async getPendingTransactions(
+    targetEmployeeId: string,
+    sinceTimestamp: Date,
+  ): Promise<TransactionAuditLog[]> {
+    await this.simulateIO();
+    return this.auditLogs.filter(
+      (log) =>
+        log.employeeId === targetEmployeeId &&
+        log.createdAt > sinceTimestamp &&
+        log.actionType === 'PENDING_HCM_ACK',
+    );
+  }
 
   private async acquireLock(key: string): Promise<void> {
-    while (this.rowLocks.has(key)) {
+    while (this.rowLocks.has(key))
       await new Promise((resolve) => setTimeout(resolve, 5));
-    }
     this.rowLocks.add(key);
   }
 
   private async simulateIO(): Promise<void> {
-    if (this.isCrashed)
-      throw new Error('SQLITE_ERROR: Database connection lost');
+    if (this.isCrashed) {
+      throw new DependencyUnavailableException('Database', 'simulateIO');
+    }
     if (this.latencyMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, this.latencyMs));
     }

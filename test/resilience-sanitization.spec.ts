@@ -16,6 +16,7 @@ describe('Resilience & Sanitization', () => {
     mockRepo = new LocalBalanceRepositoryMock();
     service = new TimeOffService(mockHcm, mockRepo);
     mockRepo.seed('E1', 'L1', 10.0);
+    mockHcm.seed('E1', 'L1', 10.0);
   });
 
   it('HCM Returns 500 on Deduction (Rollback)', async () => {
@@ -29,7 +30,7 @@ describe('Resilience & Sanitization', () => {
     expect(
       mockRepo
         .getAuditLogs()
-        .some((l) => l.type === 'ROLLBACK_AFTER_HCM_FAILURE'),
+        .some((l) => l.actionType === 'ROLLBACK_AFTER_HCM_FAILURE'),
     ).toBeTruthy();
   });
 
@@ -39,7 +40,6 @@ describe('Resilience & Sanitization', () => {
       locationId: 'L1',
       amount: 2.0,
     };
-
     await expect(service.requestTimeOff(req, 'e1-key')).rejects.toThrow(
       InvalidDimensionException,
     );

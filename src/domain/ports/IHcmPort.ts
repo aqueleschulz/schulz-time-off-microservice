@@ -8,14 +8,21 @@ import {
 
 /**
  * Outbound port establishing the contract for HCM API integrations.
- * @example
- * const balance = await hcmPort.getBalance('EMP_1', 'LOC_1');
+ * * @example
+ * const upstreamBalance = await hcmPort.getBalance('EMP_1', 'LOC_1');
  */
 export interface IHcmPort {
-  getBalance(employeeId: string, locationId: string): Promise<HcmBalanceDto>;
+  getBalance(
+    targetEmployeeId: string,
+    targetLocationId: string,
+  ): Promise<HcmBalanceDto>;
+
   deductBalance(
-    request: HcmDeductRequestDto,
-    idempotencyKey: string,
+    deductionRequestPayload: HcmDeductRequestDto,
+    idempotencyLockKey: string,
   ): Promise<HcmDeductResponseDto>;
-  processBatch(payload: HcmBatchDto): Promise<HcmBatchResponseDto>;
+
+  processBatch(
+    reconciliationBatchPayload: HcmBatchDto,
+  ): Promise<HcmBatchResponseDto>;
 }

@@ -1,181 +1,433 @@
 import { IHcmPort } from '../ports/IHcmPort';
 import { IBalanceRepository } from '../ports/IBalanceRepository';
-import { TimeOffRequestDto, HcmDeductResponseDto, BatchPayloadDto, HcmBatchResponseDto, HcmBatchResultDto } from '../schemas';
-import { InvalidDimensionException, InsufficientBalanceException, DependencyUnavailableException, StaleBatchException } from '../exceptions';
+import {
+  TimeOffRequestDto,
+  HcmDeductResponseDto,
+  BatchPayloadDto,
+  HcmBatchResponseDto,
+  HcmBatchResultDto,
+  HcmBatchBalanceDto,
+} from '../schemas';
+import {
+  InvalidDimensionException,
+  InsufficientBalanceException,
+  DependencyUnavailableException,
+  StaleBatchException,
+  CircuitBreakerOpenException,
+} from '../exceptions';
 import { Balance, TransactionAuditLog } from '../entities';
 
 export class TimeOffService {
-  private locks = new Map<string, Promise<void>>();
+  private requestExecutionQueue = new Map<string, Promise<unknown>>();
 
   constructor(
-    private readonly hcmPort: IHcmPort,
-    private readonly balanceRepository: IBalanceRepository
+    private readonly externalHcmPort: IHcmPort,
+    private readonly localBalanceRepository: IBalanceRepository,
   ) {}
 
-  public async requestTimeOff(req: TimeOffRequestDto, key: string): Promise<HcmDeductResponseDto> {
-    this.validateDimensions(req);
-    
-    // Mutex lock strictly prevents Race Conditions during concurrent Event Loop execution (PBT Fix)
-    return this.runWithLock(`${req.employeeId}-${req.locationId}`, async () => {
-      const cached = await this.balanceRepository.getIdempotencyKey(key);
-      if (cached?.responseStatus === 200) {
-        return cached.responseBody as HcmDeductResponseDto;
+  /**
+   * Processes a time-off request with idempotent guarantees and strict lock synchronization.
+   * @example
+   * const response = await service.requestTimeOff({ employeeId: 'E1', locationId: 'L1', amount: 8 }, 'uuid-123');
+   */
+  public async requestTimeOff(
+    timeOffRequest: TimeOffRequestDto,
+    idempotencyLockKey: string,
+  ): Promise<HcmDeductResponseDto> {
+    this.validateRequestDimensions(timeOffRequest);
+
+    const concurrencyKey = `${timeOffRequest.employeeId}-${timeOffRequest.locationId}`;
+    return this.enqueueSynchronizedExecution(concurrencyKey, async () => {
+      const previouslyCachedResponse =
+        await this.localBalanceRepository.getIdempotencyKey(idempotencyLockKey);
+
+      if (previouslyCachedResponse?.responseStatus === 200) {
+        return previouslyCachedResponse.responseBody as HcmDeductResponseDto;
       }
-      return this.executeDeduction(req, key);
+
+      return this.processDeductionLifecycle(timeOffRequest, idempotencyLockKey);
     });
   }
 
-  public async getBalance(employeeId: string, locationId: string): Promise<Balance> {
-    const balance = await this.balanceRepository.findBalance(employeeId, locationId);
-    return balance || { employeeId, locationId, amount: 0, lastSync: new Date() };
+  /**
+   * Retrieves the defensive local balance for immediate UI feedback.
+   * @example
+   * const balance = await service.getBalance('E1', 'L1');
+   */
+  public async getBalance(
+    targetEmployeeId: string,
+    targetLocationId: string,
+  ): Promise<Balance> {
+    const cachedBalance = await this.localBalanceRepository.findBalance(
+      targetEmployeeId,
+      targetLocationId,
+    );
+    return (
+      cachedBalance || {
+        employeeId: targetEmployeeId,
+        locationId: targetLocationId,
+        amount: 0,
+        lastSync: new Date(),
+      }
+    );
   }
 
-  public async processBatchReconciliation(batch: BatchPayloadDto): Promise<HcmBatchResponseDto> {
-    const results: HcmBatchResultDto[] = [];
-    
-    for (const item of batch.balances) {
-      if (!item.employeeId || !item.locationId) {
-        results.push({ employeeId: item.employeeId as string, status: 'ERROR' }); // Keeps original falsy value for test asserts
-        continue;
-      }
-      await this.processSingleBatchItem(item, batch);
-      results.push({ employeeId: item.employeeId, status: 'SUCCESS' });
+  /**
+   * Reconciles out-of-band updates from the HCM batch engine without losing pending local deductions.
+   * @example
+   * const syncResult = await service.processBatchReconciliation(batchPayload);
+   */
+  public async processBatchReconciliation(
+    reconciliationBatch: BatchPayloadDto,
+  ): Promise<HcmBatchResponseDto> {
+    const batchProcessingResults: HcmBatchResultDto[] = [];
+
+    for (const batchItem of reconciliationBatch.balances) {
+      const itemResult = await this.handleSingleBatchItem(
+        batchItem,
+        reconciliationBatch.generatedAt,
+      );
+      batchProcessingResults.push(itemResult);
     }
-    
+
+    const successfullyProcessedCount = batchProcessingResults.filter(
+      (result) => result.status === 'SUCCESS',
+    ).length;
+
     return {
-      batchId: batch.batchId,
-      processedCount: results.filter(r => r.status === 'SUCCESS').length,
-      errorCount: results.filter(r => r.status === 'ERROR').length,
-      results
+      batchId: reconciliationBatch.batchId,
+      processedCount: successfullyProcessedCount,
+      errorCount: batchProcessingResults.length - successfullyProcessedCount,
+      results: batchProcessingResults,
     };
   }
 
   // --- Private Business Logic ---
 
-  private async processSingleBatchItem(item: { employeeId: string; locationId: string; balance: number }, batch: BatchPayloadDto): Promise<void> {
-    const current = await this.balanceRepository.findBalance(item.employeeId, item.locationId);
-    
-    if (current && new Date(batch.generatedAt) < current.lastSync) {
-      throw new StaleBatchException(batch.generatedAt, current.lastSync.toISOString());
-    }
-    await this.applyBatchDelta(item, new Date(batch.generatedAt));
+  private async enqueueSynchronizedExecution<T>(
+    queueKey: string,
+    executionCallback: () => Promise<T>,
+  ): Promise<T> {
+    const activePromise =
+      this.requestExecutionQueue.get(queueKey) || Promise.resolve();
+    const chainedExecution = activePromise
+      .then(executionCallback)
+      .catch((caughtError) => {
+        throw caughtError;
+      });
+
+    this.requestExecutionQueue.set(
+      queueKey,
+      chainedExecution.catch(() => {}),
+    );
+    return chainedExecution as Promise<T>;
   }
 
-  private async runWithLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
-    while (this.locks.has(key)) await this.locks.get(key);
-    let release!: () => void;
-    this.locks.set(key, new Promise(res => { release = res; }));
-    try { 
-      return await fn(); 
-    } finally { 
-      this.locks.delete(key); 
-      release(); 
-    }
-  }
+  private validateRequestDimensions(timeOffRequest: TimeOffRequestDto): void {
+    if (!timeOffRequest.locationId)
+      throw new InvalidDimensionException('locationId', 'Missing locationId');
+    if (timeOffRequest.amount <= 0)
+      throw new InvalidDimensionException('amount', 'Amount must be positive');
 
-  private validateDimensions(req: TimeOffRequestDto): void {
-    if (!req.locationId) throw new InvalidDimensionException('locationId', 'Missing locationId');
-    if (req.amount <= 0) throw new InvalidDimensionException('amount', 'Amount must be positive');
-    if (Math.abs(req.amount * 100 % 1) > 0.0001) throw new InvalidDimensionException('amount', 'Exceeds decimal precision');
-    
-    // Updated Regex to allow underscores (Fixes EMP_X and BATCH_EMP_999 rejections)
-    if (!/^[a-zA-Z0-9-_]+$/.test(req.employeeId)) {
+    if (Math.abs((timeOffRequest.amount * 100) % 1) > 0.0001) {
+      throw new InvalidDimensionException(
+        'amount',
+        'Exceeds decimal precision',
+      );
+    }
+
+    if (!/^[a-zA-Z0-9-_]+$/.test(timeOffRequest.employeeId)) {
       throw new InvalidDimensionException('employeeId', 'Invalid format');
     }
   }
 
-  private async executeDeduction(req: TimeOffRequestDto, key: string): Promise<HcmDeductResponseDto> {
-    await this.ensureSufficientBalance(req);
-    const current = await this.balanceRepository.findBalance(req.employeeId, req.locationId);
-    
-    await this.balanceRepository.updateBalance(req.employeeId, req.locationId, current!.amount - req.amount);
-    await this.logTransaction(req, 'LOCAL_DEDUCTION', req.amount);
+  private async processDeductionLifecycle(
+    timeOffRequest: TimeOffRequestDto,
+    idempotencyLockKey: string,
+  ): Promise<HcmDeductResponseDto> {
+    await this.guaranteeSufficientBalance(timeOffRequest);
+
+    const originalBalanceState = await this.localBalanceRepository.findBalance(
+      timeOffRequest.employeeId,
+      timeOffRequest.locationId,
+    );
+    const originalAmountValue = originalBalanceState!.amount;
+
+    await this.localBalanceRepository.updateBalance(
+      timeOffRequest.employeeId,
+      timeOffRequest.locationId,
+      originalAmountValue - timeOffRequest.amount,
+    );
+    await this.logLocalTransaction(
+      timeOffRequest,
+      'LOCAL_DEDUCTION',
+      timeOffRequest.amount,
+    );
 
     try {
-      const res = await this.hcmPort.deductBalance(req, key);
-      await this.saveIdempotency(key, res);
-      return res;
-    } catch (error: unknown) {
-      await this.handleDeductionError(error, req, current!.amount);
-      throw error; // Safety net, though handleDeductionError always throws
+      const upstreamResponse = await this.externalHcmPort.deductBalance(
+        timeOffRequest,
+        idempotencyLockKey,
+      );
+      await this.persistIdempotencyState(
+        idempotencyLockKey,
+        upstreamResponse,
+        true,
+      );
+      return upstreamResponse;
+    } catch (upstreamFailure: unknown) {
+      return this.handleDeductionFailure(
+        upstreamFailure,
+        timeOffRequest,
+        originalAmountValue,
+      );
     }
   }
 
-  private async handleDeductionError(error: unknown, req: TimeOffRequestDto, original: number): Promise<never> {
-    const err = error as Error;
-    await this.rollbackDeduction(req, original);
+  private async handleDeductionFailure(
+    upstreamFailure: unknown,
+    timeOffRequest: TimeOffRequestDto,
+    originalAmountValue: number,
+  ): Promise<never> {
+    await this.rollbackFailedDeduction(timeOffRequest, originalAmountValue);
 
-    // Resolves JIT Hydration test logic when HCM Adapter Mock throws an insufficiency directly
-    if (err.name === 'HcmInsufficientBalanceError') {
-      const actual = await this.hcmPort.getBalance(req.employeeId, req.locationId);
-      await this.balanceRepository.updateBalance(req.employeeId, req.locationId, actual.balance);
-      throw new InsufficientBalanceException(req.employeeId, req.locationId, req.amount, actual.balance);
+    if (this.isAvailabilityFault(upstreamFailure)) {
+      throw new DependencyUnavailableException('HCM', 'deductBalance');
     }
-    
-    if (err.message === 'ETIMEDOUT' || err.name === 'HcmServerError') {
-      throw new DependencyUnavailableException('HCM', 'executeDeduction');
-    }
-    
-    throw err;
+
+    await this.resolveInsufficientBalanceDiscrepancy(
+      upstreamFailure,
+      timeOffRequest,
+    );
+
+    throw upstreamFailure;
   }
 
-  private async ensureSufficientBalance(req: TimeOffRequestDto): Promise<void> {
-    let balance = await this.balanceRepository.findBalance(req.employeeId, req.locationId);
-    if (!balance || balance.amount < req.amount) {
-      balance = await this.hydrateFromHcm(req);
+  private isAvailabilityFault(faultToEvaluate: unknown): boolean {
+    if (faultToEvaluate instanceof DependencyUnavailableException) return true;
+    if (faultToEvaluate instanceof CircuitBreakerOpenException) return true;
+    if (
+      faultToEvaluate instanceof Error &&
+      faultToEvaluate.message === 'ETIMEDOUT'
+    )
+      return true;
+    if (
+      faultToEvaluate instanceof Error &&
+      faultToEvaluate.name === 'HcmServerError'
+    )
+      return true;
+    return false;
+  }
+
+  private async resolveInsufficientBalanceDiscrepancy(
+    upstreamFailure: unknown,
+    timeOffRequest: TimeOffRequestDto,
+  ): Promise<void> {
+    if (
+      upstreamFailure instanceof Error &&
+      upstreamFailure.name === 'HcmInsufficientBalanceError'
+    ) {
+      const trueUpstreamState = await this.externalHcmPort.getBalance(
+        timeOffRequest.employeeId,
+        timeOffRequest.locationId,
+      );
+
+      await this.localBalanceRepository.updateBalance(
+        timeOffRequest.employeeId,
+        timeOffRequest.locationId,
+        trueUpstreamState.balance,
+      );
+      throw new InsufficientBalanceException(
+        timeOffRequest.employeeId,
+        timeOffRequest.locationId,
+        timeOffRequest.amount,
+        trueUpstreamState.balance,
+      );
     }
-    if (balance.amount < req.amount) {
-      throw new InsufficientBalanceException(req.employeeId, req.locationId, req.amount, balance.amount);
+  }
+
+  private async guaranteeSufficientBalance(
+    timeOffRequest: TimeOffRequestDto,
+  ): Promise<void> {
+    let currentCachedBalance = await this.localBalanceRepository.findBalance(
+      timeOffRequest.employeeId,
+      timeOffRequest.locationId,
+    );
+
+    if (
+      !currentCachedBalance ||
+      currentCachedBalance.amount < timeOffRequest.amount
+    ) {
+      currentCachedBalance = await this.executeJitHydration(timeOffRequest);
+    }
+
+    if (currentCachedBalance.amount < timeOffRequest.amount) {
+      throw new InsufficientBalanceException(
+        timeOffRequest.employeeId,
+        timeOffRequest.locationId,
+        timeOffRequest.amount,
+        currentCachedBalance.amount,
+      );
     }
   }
 
-  private async hydrateFromHcm(req: TimeOffRequestDto): Promise<Balance> {
-    const hcmData = await this.hcmPort.getBalance(req.employeeId, req.locationId);
-    await this.balanceRepository.updateBalance(req.employeeId, req.locationId, hcmData.balance);
-    await this.logTransaction(req, 'JIT_HYDRATION', hcmData.balance);
-    return { employeeId: req.employeeId, locationId: req.locationId, amount: hcmData.balance, lastSync: new Date() };
+  private async executeJitHydration(
+    timeOffRequest: TimeOffRequestDto,
+  ): Promise<Balance> {
+    const hydratedUpstreamData =
+      await this.fetchUpstreamDataResiliently(timeOffRequest);
+
+    // Persist truth unconditionally before validating
+    await this.localBalanceRepository.updateBalance(
+      timeOffRequest.employeeId,
+      timeOffRequest.locationId,
+      hydratedUpstreamData.balance,
+    );
+    await this.logLocalTransaction(
+      timeOffRequest,
+      'JIT_HYDRATION',
+      hydratedUpstreamData.balance,
+    );
+
+    if (hydratedUpstreamData.balance < 0) {
+      throw new InsufficientBalanceException(
+        timeOffRequest.employeeId,
+        timeOffRequest.locationId,
+        timeOffRequest.amount,
+        hydratedUpstreamData.balance,
+      );
+    }
+
+    return {
+      employeeId: timeOffRequest.employeeId,
+      locationId: timeOffRequest.locationId,
+      amount: hydratedUpstreamData.balance,
+      lastSync: new Date(),
+    };
   }
 
-  private async rollbackDeduction(req: TimeOffRequestDto, originalAmount: number): Promise<void> {
-    await this.balanceRepository.updateBalance(req.employeeId, req.locationId, originalAmount);
-    await this.logTransaction(req, 'ROLLBACK_AFTER_HCM_FAILURE', req.amount);
+  private async fetchUpstreamDataResiliently(
+    timeOffRequest: TimeOffRequestDto,
+  ) {
+    try {
+      return await this.externalHcmPort.getBalance(
+        timeOffRequest.employeeId,
+        timeOffRequest.locationId,
+      );
+    } catch (fetchError: unknown) {
+      if (fetchError instanceof Error && fetchError.message === 'ETIMEDOUT') {
+        throw new DependencyUnavailableException('HCM', 'executeJitHydration');
+      }
+      throw fetchError;
+    }
   }
 
-  private async saveIdempotency(key: string, res: HcmDeductResponseDto): Promise<void> {
-    await this.balanceRepository.saveIdempotencyKey({
-      key, processedAt: new Date(), responseStatus: 200, responseBody: res, internallyProcessed: true,
+  private async rollbackFailedDeduction(
+    timeOffRequest: TimeOffRequestDto,
+    originalAmountValue: number,
+  ): Promise<void> {
+    await this.localBalanceRepository.updateBalance(
+      timeOffRequest.employeeId,
+      timeOffRequest.locationId,
+      originalAmountValue,
+    );
+    await this.logLocalTransaction(
+      timeOffRequest,
+      'ROLLBACK_AFTER_HCM_FAILURE',
+      timeOffRequest.amount,
+    );
+  }
+
+  private async persistIdempotencyState(
+    idempotencyLockKey: string,
+    upstreamResponse: HcmDeductResponseDto,
+    wasInternallyProcessed: boolean,
+  ): Promise<void> {
+    await this.localBalanceRepository.saveIdempotencyKey({
+      key: idempotencyLockKey,
+      processedAt: new Date(),
+      responseStatus: 200,
+      responseBody: upstreamResponse,
+      internallyProcessed: wasInternallyProcessed,
     });
   }
 
-  private async applyBatchDelta(item: { employeeId: string; locationId: string; balance: number }, generatedAt: Date): Promise<void> {
-    const pending = await this.getUnacknowledgedDeductions(item.employeeId, generatedAt);
-    const pendingTotal = pending.reduce((sum, log) => sum + log.amount, 0);
-    const effectiveBalance = item.balance - pendingTotal;
-    
-    await this.balanceRepository.updateBalance(item.employeeId, item.locationId, effectiveBalance);
-    await this.logTransaction(item, 'RECONCILED_VIA_BATCH', effectiveBalance);
-  }
-
-  private async getUnacknowledgedDeductions(employeeId: string, since: Date): Promise<TransactionAuditLog[]> {
-    if (this.balanceRepository.getPendingTransactions) return this.balanceRepository.getPendingTransactions(employeeId, since);
-    
-    type MockRepo = { getAuditLogs(): TransactionAuditLog[] };
-    if ('getAuditLogs' in this.balanceRepository) {
-      const logs = (this.balanceRepository as unknown as MockRepo).getAuditLogs();
-      // Added "!l.employeeId" fallback to support the specific test mock injection payload that omitted this field
-      return logs.filter(l => (!l.employeeId || l.employeeId === employeeId) && l.createdAt > since && 
-        (l.type === 'PENDING_HCM_ACK' || l.actionType === 'PENDING_HCM_ACK'));
+  private async handleSingleBatchItem(
+    batchItem: HcmBatchBalanceDto,
+    batchGeneratedAtString: string,
+  ): Promise<HcmBatchResultDto> {
+    if (!batchItem.employeeId || !batchItem.locationId) {
+      return { employeeId: batchItem.employeeId, status: 'ERROR' };
     }
-    return [];
+
+    try {
+      const currentCachedRecord = await this.localBalanceRepository.findBalance(
+        batchItem.employeeId,
+        batchItem.locationId,
+      );
+      const batchGenerationTimestamp = new Date(batchGeneratedAtString);
+
+      if (
+        currentCachedRecord &&
+        batchGenerationTimestamp < currentCachedRecord.lastSync
+      ) {
+        throw new StaleBatchException(
+          batchGeneratedAtString,
+          currentCachedRecord.lastSync.toISOString(),
+        );
+      }
+
+      await this.applyReconciliationDelta(batchItem, batchGenerationTimestamp);
+      return { employeeId: batchItem.employeeId, status: 'SUCCESS' };
+    } catch (itemProcessingError) {
+      // Prevents swallowing critical domain exceptions
+      if (itemProcessingError instanceof StaleBatchException)
+        throw itemProcessingError;
+      return { employeeId: batchItem.employeeId, status: 'ERROR' };
+    }
   }
 
-  private async logTransaction(req: { employeeId?: string; locationId?: string }, type: string, amount: number): Promise<void> {
-    await this.balanceRepository.recordTransaction({
-      employeeId: req.employeeId,
-      locationId: req.locationId,
-      amount,
-      actionType: type,
-      type: type,
+  private async applyReconciliationDelta(
+    batchItem: HcmBatchBalanceDto,
+    batchGenerationTimestamp: Date,
+  ): Promise<void> {
+    const unacknowledgedPendingTransactions =
+      await this.localBalanceRepository.getPendingTransactions(
+        batchItem.employeeId,
+        batchGenerationTimestamp,
+      );
+
+    const aggregatedPendingDeductions =
+      unacknowledgedPendingTransactions.reduce(
+        (accumulatedSum, auditLog) => accumulatedSum + auditLog.amount,
+        0,
+      );
+    const reconciledEffectiveBalance =
+      batchItem.balance - aggregatedPendingDeductions;
+
+    await this.localBalanceRepository.updateBalance(
+      batchItem.employeeId,
+      batchItem.locationId,
+      reconciledEffectiveBalance,
+    );
+    await this.logLocalTransaction(
+      batchItem,
+      'RECONCILED_VIA_BATCH',
+      reconciledEffectiveBalance,
+    );
+  }
+
+  private async logLocalTransaction(
+    transactionDimensions: { employeeId?: string; locationId?: string },
+    logActionType: string,
+    transactedAmount: number,
+  ): Promise<void> {
+    await this.localBalanceRepository.recordTransaction({
+      transactionId: `tx-${Date.now()}-${Math.random()}`,
+      employeeId: transactionDimensions.employeeId || 'UNKNOWN',
+      locationId: transactionDimensions.locationId || 'UNKNOWN',
+      amount: transactedAmount,
+      actionType: logActionType,
       sourceSystem: 'ExampleHR',
       createdAt: new Date(),
     });

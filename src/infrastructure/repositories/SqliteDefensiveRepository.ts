@@ -10,117 +10,159 @@ import {
 } from '../../domain/entities';
 import * as schema from '../database/DrizzleSchema';
 import { DI_TOKENS } from '../di/InjectionTokens';
+import { DependencyUnavailableException } from '../../domain/exceptions';
 
 @Injectable()
 export class SqliteDefensiveRepository implements IBalanceRepository {
   constructor(
     @Inject(DI_TOKENS.DB_CONNECTION)
-    private readonly db: BetterSQLite3Database<typeof schema>,
+    private readonly dbConnection: BetterSQLite3Database<typeof schema>,
   ) {}
 
   public async findBalance(
-    employeeId: string,
-    locationId: string,
+    targetEmployeeId: string,
+    targetLocationId: string,
   ): Promise<Balance | null> {
-    const records = await this.db
-      .select()
-      .from(schema.timeOffBalancesTable)
-      .where(
-        and(
-          eq(schema.timeOffBalancesTable.employeeId, employeeId),
-          eq(schema.timeOffBalancesTable.locationId, locationId),
-        ),
-      )
-      .limit(1);
-    return records[0] || null;
+    return this.executeWithResilience('findBalance', async () => {
+      const records = await this.dbConnection
+        .select()
+        .from(schema.timeOffBalancesTable)
+        .where(
+          and(
+            eq(schema.timeOffBalancesTable.employeeId, targetEmployeeId),
+            eq(schema.timeOffBalancesTable.locationId, targetLocationId),
+          ),
+        )
+        .limit(1);
+      return records[0] || null;
+    });
   }
 
   public async updateBalance(
-    employeeId: string,
-    locationId: string,
-    amount: number,
+    targetEmployeeId: string,
+    targetLocationId: string,
+    newBalanceAmount: number,
   ): Promise<void> {
-    const existing = await this.findBalance(employeeId, locationId);
-    const now = new Date();
+    return this.executeWithResilience('updateBalance', async () => {
+      const existingRecord = await this.findBalance(
+        targetEmployeeId,
+        targetLocationId,
+      );
+      const synchronizationTime = new Date();
 
-    if (existing) {
-      await this.db
-        .update(schema.timeOffBalancesTable)
-        .set({ amount, lastSync: now })
-        .where(
-          and(
-            eq(schema.timeOffBalancesTable.employeeId, employeeId),
-            eq(schema.timeOffBalancesTable.locationId, locationId),
-          ),
-        );
-      return;
-    }
-    await this.db.insert(schema.timeOffBalancesTable).values({
-      id: randomUUID(),
-      employeeId,
-      locationId,
-      amount,
-      lastSync: now,
+      if (existingRecord) {
+        await this.dbConnection
+          .update(schema.timeOffBalancesTable)
+          .set({ amount: newBalanceAmount, lastSync: synchronizationTime })
+          .where(
+            and(
+              eq(schema.timeOffBalancesTable.employeeId, targetEmployeeId),
+              eq(schema.timeOffBalancesTable.locationId, targetLocationId),
+            ),
+          );
+        return;
+      }
+
+      await this.dbConnection.insert(schema.timeOffBalancesTable).values({
+        id: randomUUID(),
+        employeeId: targetEmployeeId,
+        locationId: targetLocationId,
+        amount: newBalanceAmount,
+        lastSync: synchronizationTime,
+      });
     });
   }
 
-  public async recordTransaction(entry: TransactionAuditLog): Promise<void> {
-    await this.db.insert(schema.transactionAuditLogsTable).values({
-      id: randomUUID(),
-      transactionId: entry.transactionId || null,
-      employeeId: entry.employeeId || 'UNKNOWN',
-      locationId: entry.locationId || 'UNKNOWN',
-      amount: entry.amount,
-      actionType: entry.actionType || entry.type || 'UNKNOWN',
-      type: entry.type || entry.actionType,
-      sourceSystem: entry.sourceSystem || 'SYSTEM',
-      createdAt: entry.createdAt,
+  public async recordTransaction(
+    auditLogEntry: TransactionAuditLog,
+  ): Promise<void> {
+    return this.executeWithResilience('recordTransaction', async () => {
+      await this.dbConnection.insert(schema.transactionAuditLogsTable).values({
+        id: randomUUID(),
+        transactionId: auditLogEntry.transactionId || null,
+        employeeId: auditLogEntry.employeeId,
+        locationId: auditLogEntry.locationId,
+        amount: auditLogEntry.amount,
+        actionType: auditLogEntry.actionType,
+        sourceSystem: auditLogEntry.sourceSystem,
+        createdAt: auditLogEntry.createdAt,
+      });
     });
   }
 
-  public async saveIdempotencyKey(record: IdempotencyRecord): Promise<void> {
-    await this.db.insert(schema.idempotencyKeysTable).values({
-      key: record.key,
-      requestPayload: record.requestPayload,
-      responseStatus: record.responseStatus || null,
-      responseBody: record.responseBody,
-      processedAt: record.processedAt,
-      internallyProcessed: record.internallyProcessed || false,
+  public async saveIdempotencyKey(
+    idempotencyRecord: IdempotencyRecord,
+  ): Promise<void> {
+    return this.executeWithResilience('saveIdempotencyKey', async () => {
+      await this.dbConnection.insert(schema.idempotencyKeysTable).values({
+        key: idempotencyRecord.key,
+        requestPayload: idempotencyRecord.requestPayload,
+        responseStatus: idempotencyRecord.responseStatus || null,
+        responseBody: idempotencyRecord.responseBody,
+        processedAt: idempotencyRecord.processedAt,
+        internallyProcessed: idempotencyRecord.internallyProcessed || false,
+      });
     });
   }
 
   public async getIdempotencyKey(
-    key: string,
+    uniqueIdempotencyKey: string,
   ): Promise<IdempotencyRecord | null> {
-    const records = await this.db
-      .select()
-      .from(schema.idempotencyKeysTable)
-      .where(eq(schema.idempotencyKeysTable.key, key))
-      .limit(1);
+    return this.executeWithResilience('getIdempotencyKey', async () => {
+      const records = await this.dbConnection
+        .select()
+        .from(schema.idempotencyKeysTable)
+        .where(eq(schema.idempotencyKeysTable.key, uniqueIdempotencyKey))
+        .limit(1);
 
-    if (!records[0]) return null;
+      if (!records[0]) return null;
 
-    const ageInHours =
-      (Date.now() - records[0].processedAt.getTime()) / 3600000;
-    return ageInHours > 24 ? null : (records[0] as IdempotencyRecord);
+      const IDEMPOTENCY_KEY_TTL_HOURS = 24;
+      const ageInHours =
+        (Date.now() - records[0].processedAt.getTime()) / 3600000;
+
+      return ageInHours > IDEMPOTENCY_KEY_TTL_HOURS
+        ? null
+        : (records[0] as IdempotencyRecord);
+    });
   }
 
   public async getPendingTransactions(
-    employeeId: string,
-    since: Date,
+    targetEmployeeId: string,
+    sinceTimestamp: Date,
   ): Promise<TransactionAuditLog[]> {
-    const records = await this.db
-      .select()
-      .from(schema.transactionAuditLogsTable)
-      .where(
-        and(
-          eq(schema.transactionAuditLogsTable.employeeId, employeeId),
-          gt(schema.transactionAuditLogsTable.createdAt, since),
-        ),
-      );
+    return this.executeWithResilience('getPendingTransactions', async () => {
+      const records = await this.dbConnection
+        .select()
+        .from(schema.transactionAuditLogsTable)
+        .where(
+          and(
+            eq(schema.transactionAuditLogsTable.employeeId, targetEmployeeId),
+            gt(schema.transactionAuditLogsTable.createdAt, sinceTimestamp),
+          ),
+        );
 
-    return records.filter(
-      (r) => r.actionType === 'PENDING_HCM_ACK',
-    ) as TransactionAuditLog[];
+      return records.filter(
+        (r) => r.actionType === 'PENDING_HCM_ACK',
+      ) as TransactionAuditLog[];
+    });
+  }
+
+  // Intercepta falhas brutas do Drizzle/SQLite e traduz para exceções de Domínio (Alvo B2)
+  private async executeWithResilience<T>(
+    operationName: string,
+    databaseAction: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await databaseAction();
+    } catch (caughtError: unknown) {
+      if (
+        caughtError instanceof Error &&
+        caughtError.message.includes('SQLITE_ERROR')
+      ) {
+        throw new DependencyUnavailableException('Database', operationName);
+      }
+      throw caughtError;
+    }
   }
 }

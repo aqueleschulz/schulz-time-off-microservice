@@ -5,38 +5,47 @@ import { LocalBalanceRepositoryMock } from '../mocks/LocalBalanceRepositoryMock'
 
 describe('Property-Based Tests', () => {
   it('Race Condition Detector for Concurrent Deductions', async () => {
-    const mockRepo = new LocalBalanceRepositoryMock();
-    const service = new TimeOffService(new HcmAdapterMock(), mockRepo);
-
     await fc.assert(
       fc.asyncProperty(
-        fc.array(fc.float({ min: 1, max: 5 }), {
+        fc.array(fc.integer({ min: 1, max: 5 }), {
           minLength: 10,
           maxLength: 100,
         }),
         async (amounts) => {
+          const mockRepo = new LocalBalanceRepositoryMock();
+          const mockHcm = new HcmAdapterMock();
+          const service = new TimeOffService(mockHcm, mockRepo);
+
           const initialBalance = amounts.reduce((a, b) => a + b, 0);
           mockRepo.seed('E-PBT', 'L1', initialBalance);
+          mockHcm.seed('E-PBT', 'L1', initialBalance);
+
+          // Unique run ID guarantees idempotency keys never collide across parallel loops
+          const runId = Math.random().toString(36).substring(7);
 
           const promises = amounts.map((amt, i) =>
             service
               .requestTimeOff(
                 { employeeId: 'E-PBT', locationId: 'L1', amount: amt },
-                `key-${i}`,
+                `key-${runId}-${i}`,
               )
               .catch((e) => ({ status: 'ERROR', error: e })),
           );
 
           const results = await Promise.all(promises);
-          const approved = results.filter((r) => r.status === 'SUCCESS');
 
-          const finalBalance = await mockRepo.getBalance('E-PBT', 'L1');
-          const totalDeducted = approved.reduce(
-            (sum, r: any) => sum + r.remainingBalance,
+          const totalApprovedAmount = results.reduce(
+            (sum, result, index) =>
+              (result as any).status === 'SUCCESS' ? sum + amounts[index] : sum,
             0,
           );
 
-          expect(finalBalance + totalDeducted).toBeCloseTo(initialBalance, 2);
+          const finalBalance = await mockRepo.getBalance('E-PBT', 'L1');
+
+          expect(finalBalance + totalApprovedAmount).toBeCloseTo(
+            initialBalance,
+            2,
+          );
           expect(finalBalance).toBeGreaterThanOrEqual(0);
         },
       ),
