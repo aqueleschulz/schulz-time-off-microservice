@@ -11,10 +11,12 @@ import * as schema from './DrizzleSchema';
     {
       provide: DI_TOKENS.DB_CONNECTION,
       useFactory: () => {
-        // In-memory strictly for isolated tests, or file based for runtime
-        const sqlite = new Database(
-          process.env.NODE_ENV === 'test' ? ':memory:' : 'sqlite.db',
-        );
+        // While testing, uses memory. If not testing, uses docker path or default
+        const dbPath = process.env.NODE_ENV === 'test' 
+          ? ':memory:' 
+          : (process.env.DATABASE_URL?.replace('file:', '') || 'sqlite.db');
+          
+        const sqlite = new Database(dbPath);
         return drizzle(sqlite, { schema });
       },
     },

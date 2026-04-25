@@ -3,6 +3,9 @@ import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { TimeOffDomainExceptionFilter } from './presentation/filters/TimeOffDomainExceptionFilter';
+import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
+import { DI_TOKENS } from './infrastructure/di/InjectionTokens';
+import { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -25,7 +28,14 @@ async function bootstrap() {
   const document = SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('api', app, document);
 
+  await app.init(); 
+
+  const dbConnection = app.get<BetterSQLite3Database>(DI_TOKENS.DB_CONNECTION);
+  migrate(dbConnection, { migrationsFolder: './drizzle' });
+  console.log('Database schemas successfully synchronized.');
+
   await app.listen(process.env.PORT || 3000);
+  console.log(`Application is running on port: ${process.env.PORT || 3000}`);
 }
 
 bootstrap().catch((err) => {

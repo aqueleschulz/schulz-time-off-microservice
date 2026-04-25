@@ -3,6 +3,8 @@ FROM node:20-alpine AS builder
 
 WORKDIR /usr/src/app
 
+RUN apk add --no-cache python3 make g++
+
 COPY package*.json ./
 RUN npm install
 
@@ -19,6 +21,7 @@ WORKDIR /usr/src/app
 
 COPY --from=builder /usr/src/app/dist ./dist
 COPY --from=builder /usr/src/app/package*.json ./
+COPY --from=builder /usr/src/app/drizzle ./drizzle 
 
 RUN npm install --omit=dev
 
