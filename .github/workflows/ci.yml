@@ -18,10 +18,12 @@ jobs:
       - name: Setup Node.js 20
         uses: actions/setup-node@v4
         with:
-          node-version: '20' # Alinhado com a nossa imagem Alpine
+          node-version: '20'
           cache: 'npm'
 
       - name: Install Dependencies
+        # npm ci is used here to ensure a clean, idempotent install 
+        # based strictly on the package-lock.json
         run: npm ci
 
       - name: Run Linter
@@ -36,6 +38,8 @@ jobs:
   docker-verification:
     name: Docker Build Check
     runs-on: ubuntu-latest
+    # This dependency ensures Docker images are only built 
+    # if the application logic passes all quality gates
     needs: quality-assurance
 
     steps:
@@ -43,4 +47,8 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Verify Docker Compose Build
-        run: docker-compose build
+        # Workaround for CI environment constraints:
+        # Using 'docker compose' instead of the legacy 'docker-compose' 
+        # to avoid the 'command not found' (exit code 127) error 
+        # in modern GitHub runners.
+        run: docker compose build
